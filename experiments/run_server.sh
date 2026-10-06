@@ -23,7 +23,13 @@ MEM_UTIL="${MEM_UTIL:-0.90}"
 
 SPEC_ARGS=()
 if [ "$SPEC_METHOD" != "none" ]; then
-  SPEC_ARGS=(--speculative-config "{\"method\": \"$SPEC_METHOD\", \"model\": \"$SPEC_MODEL\", \"num_speculative_tokens\": $K}")
+  if [ -n "$SYNTH_RATE" ]; then
+    # Controlled acceptance profile: real draft cost (e.g. ngram) + synthetic
+    # accept/reject at the given average rate (vLLM >=0.19 feature).
+    SPEC_ARGS=(--speculative-config "{\"method\": \"$SPEC_METHOD\", \"model\": \"ngram\", \"num_speculative_tokens\": $K, \"rejection_sample_method\": \"synthetic\", \"synthetic_acceptance_rate\": $SYNTH_RATE}")
+  else
+    SPEC_ARGS=(--speculative-config "{\"method\": \"$SPEC_METHOD\", \"model\": \"$SPEC_MODEL\", \"num_speculative_tokens\": $K}")
+  fi
 fi
 
 CUDA_VISIBLE_DEVICES=$GPU .venv/bin/vllm serve "$MODEL" \
