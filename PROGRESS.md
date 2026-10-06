@@ -46,3 +46,21 @@ In review=`df73e18b` Done=`98236657`. Update via `scripts/set_item_status.sh <it
   SD on/off} from rich live serving state with an SLO/goodput objective. Our gap is real.
 - vLLM code-audit subagent dispatched (lookahead-KV path, draft→next-step flow, dynamic-K
   patch surface) → `docs/vllm-code-audit.md` pending.
+- **⚠️ CRITICAL FINDING — synthetic rejection sampler is a no-op in vLLM 0.19.1:**
+  `rejection_sample_method=synthetic` + `synthetic_acceptance_rate` are *accepted* by the config
+  (and logged in `non-default args`) but **not applied** when drafting with ngram. Proof: three runs
+  at rates 0.35/0.60/0.85 produced **byte-identical** total accepted tokens (8680), per-position
+  acceptance (93.99/91.24/89.37%), and mean accept len (3.75). The worker's `RejectionSampler`
+  branch (`rejection_sampler.py:560`) exists but is evidently not hit on this path. **Consequence:**
+  the "vary acceptance rate" axis cannot use the built-in synthetic feature in this version.
+  v1 sweep (34 runs) archived to `results/_v1_invalid/` — its SD runs are invalid; only the 4 AR
+  baselines (`A_ar_r{2,6,12,24}`) remain usable.
+- **Pivot to K-sweep (Phase 1 v2):** speculation length K is the user's core decision variable and
+  does NOT depend on the broken synthetic feature. With real ngram acceptance (~3.75 tok/step at
+  moderate load), validated that accept len scales cleanly with K (K=1→1.95, K=8→7.28) and
+  throughput follows (740→801 tok/s @ r6). Hypothesis: optimum-K shifts with load → the oracle gap
+  for dynamic-K scheduling. `phase1_sweep_v2.sh`: K∈{1,2,4,8} × rate∈{2,6,12,24}, real ngram,
+  all knobs exported (fixed v1's non-exported-var bug that silently defaulted K=3, num_prompts=40).
+- **Harness bug class fixed:** shell vars set at a script's top are NOT inherited by child scripts
+  unless `export`ed. v1 sweep's `K`, `NUM_PROMPTS` were plain vars → children used defaults. All v2
+  knobs are exported; `run_experiment.sh` now also accepts EXP as `$1`.

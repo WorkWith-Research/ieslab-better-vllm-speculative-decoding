@@ -23,10 +23,13 @@ MEM_UTIL="${MEM_UTIL:-0.90}"
 
 SPEC_ARGS=()
 if [ "$SPEC_METHOD" != "none" ]; then
-  if [ -n "$SYNTH_RATE" ]; then
-    # Controlled acceptance profile: real draft cost (e.g. ngram) + synthetic
-    # accept/reject at the given average rate (vLLM >=0.19 feature).
+  if [ -n "${SYNTH_RATE:-}" ]; then
+    # Controlled acceptance profile (NOTE: vLLM 0.19.1 does not actually apply
+    # synthetic with ngram — see PROGRESS.md; kept for future vLLM versions).
     SPEC_ARGS=(--speculative-config "{\"method\": \"$SPEC_METHOD\", \"model\": \"ngram\", \"num_speculative_tokens\": $K, \"rejection_sample_method\": \"synthetic\", \"synthetic_acceptance_rate\": $SYNTH_RATE}")
+  elif [ "$SPEC_METHOD" = "ngram" ] || [ "$SPEC_METHOD" = "suffix" ]; then
+    # Self-drafting methods: no external draft model needed.
+    SPEC_ARGS=(--speculative-config "{\"method\": \"$SPEC_METHOD\", \"num_speculative_tokens\": $K}")
   else
     SPEC_ARGS=(--speculative-config "{\"method\": \"$SPEC_METHOD\", \"model\": \"$SPEC_MODEL\", \"num_speculative_tokens\": $K}")
   fi

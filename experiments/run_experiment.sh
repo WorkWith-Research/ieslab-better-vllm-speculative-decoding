@@ -8,7 +8,9 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-EXP="${EXP:?need EXP name}"
+# EXP may be passed as $1 or via env; prefer $1.
+if [ $# -ge 1 ] && [ -n "${1:-}" ]; then EXP="$1"; shift; fi
+EXP="${EXP:?need EXP name (as \$1 or env)}"
 PORT="${PORT:-8100}"
 GPU="${GPU:-0}"
 NUM_PROMPTS="${NUM_PROMPTS:-40}"
