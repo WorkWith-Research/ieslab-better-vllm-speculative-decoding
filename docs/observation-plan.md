@@ -4,6 +4,21 @@ Goal: before designing any controller, *measure* where fixed-K speculative decod
 misbehaves under multi-request load in vLLM, and quantify the headroom a dynamic
 reconfiguration policy could capture.
 
+## Status (2026-10-07) — what actually ran vs this plan
+
+- **v1 sweep (synthetic-acceptance axis) is INVALID.** vLLM 0.19.1's
+  `rejection_sample_method=synthetic` is a no-op with ngram drafting (byte-identical
+  acceptance across rates 0.35/0.60/0.85). Archived to `results/_v1_invalid/`.
+- **Pivot → K-sweep (Phase 1 v2, running):** speculation length K is the core decision
+  variable and needs no synthetic feature. `phase1_sweep_v2.sh`: K∈{1,2,4,8} ×
+  Poisson rate∈{2,6,12,24} req/s, real ngram acceptance (high on this workload:
+  ~3.75 tok/step @ moderate load), Qwen2.5-7B, in/out 512/384, max-len 8192,
+  chunk budget 2048. AR baselines `A_ar_r{2,6,12,24}` already collected (valid).
+- **Analysis** via `experiments/analyze.py` → K×load pivots (throughput / accept-len /
+  TPOT) + **optimum-K shift** per load = the oracle-gap evidence for dynamic-K.
+- EAGLE draft still incompatible with vLLM 0.19.1 (no `EagleQwen2ForCausalLM`); ngram
+  is the working drafter for Phase 1. Real-EAGLE numbers deferred to a later phase.
+
 ## Models & hardware
 
 - Target: `Qwen/Qwen2.5-7B-Instruct` (fp16/bf16, ~15 GB) on GPU 0
