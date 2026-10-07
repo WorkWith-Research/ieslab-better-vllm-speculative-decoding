@@ -217,12 +217,15 @@ C=1 the per-request ranking should match replay's (cross-check of c(k)).
 
 ### 2026-10-07 (cont.) — PA grid run #1 classified INVALID (metric bug) + re-run with fixed client
 **Bug found during validation (charter Step 5):** `latency_client.py` counted **SSE chunks** as
-tokens. vLLM emits one chunk per *decode step*, so speculative configs' token counts were
-undercounted by ~their acceptance length (k1 ×~1.9, k4 ×~3.7, k8 ×~5+), while AR was unaffected
-(1 token/chunk). Consequence: run #1's throughput "AR 756 > k1 655 ≈ k2 660 < k4 666" is **INVALID**
-as a throughput ranking (it measured steps/s, not tokens/s — and made SD look *worse* than AR, the
-opposite of Phase-1's established result). TPOT from run #1 is likewise invalid (divided by chunk
-count). TTFT, GPU util, and chosen-K distributions remain valid.
+tokens. vLLM does NOT emit one chunk per token — it batches several tokens per chunk (measured on a
+K=4 verify run: mean 0.854 chunks/token, range 0.22–0.99; more bundling at higher K). So speculative
+configs' token counts were undercounted (≈15% at K=4, more at K=8), while AR was unaffected (its
+chunks are also sub-token-rate but the relative error pattern differs); run #1's SD configs all
+clustered near ~660 "chunks/s" regardless of K — a step/flush-rate quantity, not tokens/s. The
+throughput numbers and TPOT from run #1 are **INVALID** (TPOT biased high by ~the same ratio for SD
+configs; throughput within ~15% but imprecise). Note: run #1's "AR 756 > k4 666" does NOT by itself
+contradict Phase-1 (different workload: mixed vs random-template) — it becomes a real finding only
+once the fixed client confirms it. TTFT, GPU util, and chosen-K distributions remain valid.
 **Fix:** client now counts real completion tokens via `stream_options.include_usage` (authoritative
 `usage.completion_tokens` in the final chunk) with a text-length fallback; smoke-verified against
 A/B v1's independently-measured 773.9 tok/s (K=4, C=16, eager) before re-running.
