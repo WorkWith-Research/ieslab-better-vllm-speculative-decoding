@@ -59,6 +59,22 @@ logging). If ldm_log ≈ k8 within noise, enforcement overhead is negligible and
 - *Client serial-sending artifact* — fixed (worker pool), re-measured.
 - *Cold-start collapse* — fixed (optimistic cold start); verified differentiation high→6/med→3/low→1.
 
+## Partial results (2026-10-07, CPU analysis of A/B v1 decision log)
+**Live-data oracle gap under the per-request cost model:** best fixed K=**1** (1.690), oracle 1.781
+(+5.4%). This **directly contradicts live serving**, where K=8 (793.6) beat K=4 (773.9). The
+contradiction is the strongest evidence yet for **E1**: at concurrency 16, one target forward pass
+serves the whole batch, so a request's extra draft tokens are verified almost for free — the
+per-request cost model c(k) massively overstates the marginal cost of deep K in a busy batch. E1's
+C-sweep (especially C=1, where per-request ranking should match the model) is now the decisive test.
+
+**Observation-bias caveat (important):** the live decision log only records acceptance up to each
+step's *effective* K — for steps drafted at K=1 we never see what positions 2–8 would have accepted.
+So live J profiles are **truncated**, and any replay over them is a lower bound; in particular the
+LDM-replay-on-live-sequences score (1.415, −16% vs fixed K=1) reflects this bias plus the cost model,
+and must not be read as "the live controller underperformed its own replay". Only counterfactual
+runs (same workload at different fixed Ks) give unbiased per-k values — which is exactly what the
+Priority-A grid provides.
+
 ## Implications for the oracle calculation
 Until E1–E2 are resolved, the replay oracle gap (~12%) is an **upper-bound estimate under a
 per-request cost model**, not a live-serving guarantee. The honest current statement: per-request
