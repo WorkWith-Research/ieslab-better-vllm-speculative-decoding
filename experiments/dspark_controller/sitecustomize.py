@@ -95,13 +95,18 @@ def _install():
 
     def _greedy(reqs):
         # reqs: {req_id: (K_current, Jvec)}. Returns {req_id: K_new}.
-        K = {r: v[0] for r, v in reqs.items()}
-        J = {r: v[1] for r, v in reqs.items()}
+        # Pre-registered (PROGRESS.md P5): start from ALL-ZERO (SD off) and greedily extend
+        # while Theta improves; if nothing beats the all-zero baseline, the result is K=0 for
+        # every request — i.e. "SD off" is an explicit, reachable outcome (deviation from
+        # DSpark's production system, which has no off state; P2 showed AR wins at C=96).
         if not reqs:
-            return K
-        tau = sum(1.0 + sum(J[r][:K[r] + 1]) for r in reqs)
-        B = sum(1 + K[r] for r in reqs)
-        theta = _theta(tau, B)
+            return {r: 0 for r in reqs}
+        K = {r: 0 for r in reqs}
+        J = {r: v[1] for r, v in reqs.items()}
+        tau0 = float(len(reqs))                      # all-zero: 1 bonus token per request per step
+        B0 = float(len(reqs))
+        theta_base = _theta(tau0, B0)
+        tau, B, theta = tau0, B0, theta_base
         improved = True
         while improved:
             improved = False
@@ -121,6 +126,9 @@ def _install():
                 K[best_r] += 1
                 tau, B, theta = best_tau, B + 1, best_theta
                 improved = True
+        # SD-off fallback: compare final allocation against the all-zero baseline.
+        if theta < theta_base:
+            return {r: 0 for r in reqs}
         return K
 
     _orig_stats = Scheduler.make_spec_decoding_stats

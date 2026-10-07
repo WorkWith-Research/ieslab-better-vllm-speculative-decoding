@@ -40,8 +40,10 @@ def _install():
 
     KMAX = int(os.environ.get("VLLM_LDM_KMAX", "8"))
     W = int(os.environ.get("VLLM_LDM_WINDOW", "8"))
-    # measured sub-linear verify-cost c(k), c(1)=1 (from Phase-1 throughput/accept-len)
-    C = [0.0, 1.000, 1.544, 1.876, 2.207, 2.507, 2.807, 3.107, 3.407]
+    # measured sub-linear verify-cost c(k), c(1)=1 (from Phase-1 throughput/accept-len).
+    # c(0) = 1.0: an AR step does one forward pass over the batch (1 token/request) — same
+    # baseline work as a K=1 step minus verification; pre-registered for the SD-off fallback.
+    C = [1.0, 1.000, 1.544, 1.876, 2.207, 2.507, 2.807, 3.107, 3.407]
 
     def c(k):
         if k < len(C):
@@ -55,12 +57,15 @@ def _install():
     _orig_drafts = Scheduler.update_draft_token_ids
 
     def _decide(hist):
+        # Pre-registered SD-off fallback (PROGRESS.md P5): k*=0 is a candidate — an AR step
+        # (c(0)=1) captures exactly 1 token. If no speculative length beats it on the value
+        # ratio, the request runs at K=0.
         if not hist:
             return 1
         J = [1.0] * (KMAX + 1)
         for l in range(1, KMAX + 1):
             J[l] = sum(1 for x in hist if x >= l) / len(hist)
-        best, bv = 1, -1.0
+        best, bv = 0, 1.0 / c(0)          # k*=0 baseline: captures 1 token at AR cost
         for k in range(1, KMAX + 1):
             v = sum(J[:k + 1]) / c(k)
             if v > bv:
