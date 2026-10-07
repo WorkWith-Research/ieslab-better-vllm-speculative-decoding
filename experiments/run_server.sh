@@ -20,6 +20,14 @@ MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}"
 MAX_NUM_SEQS="${MAX_NUM_SEQS:-32}"
 CHUNK_TOKENS="${CHUNK_TOKENS:-2048}"
 MEM_UTIL="${MEM_UTIL:-0.90}"
+# In-loop scheduler controllers (monkey-patch via sitecustomize on PYTHONPATH):
+#   CONTROLLER=ldm     -> experiments/ldm_controller (acceptance-only LDM; needs VLLM_LDM_OUT)
+#   CONTROLLER=dspark  -> experiments/dspark_controller (DSpark-rule baseline; needs VLLM_DSPARK_OUT, VLLM_SPS_TABLE)
+CONTROLLER="${CONTROLLER:-}"
+
+if [ -n "$CONTROLLER" ]; then
+  export PYTHONPATH="$(pwd)/experiments/${CONTROLLER}:${PYTHONPATH:-}"
+fi
 
 SPEC_ARGS=()
 if [ "$SPEC_METHOD" != "none" ]; then

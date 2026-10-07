@@ -344,6 +344,31 @@ total uncertainty. SPEED-Bench cells (P3) use 1536 distinct prompts → real per
 near-tie between adjacent K values at any C, that tie is NOT evidence of equivalence — resolve with P3 or a
 seed-varied repeat before drawing conclusions.
 
+### 2026-10-08 — P2 grid COMPLETE (45/45) + H-load verdict: **SUPPORT**
+**Result (`docs/p2-load-matrix-results.md`, pivot in `results/p2/summary.csv`):** argmax_K flips with load.
+
+| C | argmax_K | best tok/s | SD(K=8) vs AR |
+|---|---|---|---|
+| 8 | K=8 | 434.5 | **+10.3%** |
+| 32 | K=8 | 1464.5 | +1.0% |
+| 96 | **none (AR)** | 2457.6 | **−20.8%** |
+
+- At low/medium load larger K wins; at the highest load **speculation is net-negative** and the loss grows
+  with K (K=1 −2.7% … K=8 −20.8% vs AR). The DSpark-style load-driven-K effect is confirmed on ngram.
+- **Verdict: SUPPORT (H-load)** — argmax changes C_low→C_high AND best-vs-worst gap at each C (13–21%) ≫ trial
+  sd (≤30.8 tok/s ≈ 1.6%). Falsification not triggered.
+- **Recorded deviation:** C=96 shows waiting_max=0, KV ≤21%, no preemptions → it is the *highest feasible*
+  load on this short-ISL workload, i.e. **compute/occupancy**-saturated, NOT capacity-saturated (no sustained
+  queue). The flip is a compute-occupancy phenomenon; behavior under true capacity saturation (long prefills)
+  is the P3 question (SPEED-Bench throughput_2k, already pre-registered above).
+- **Validity all met:** achieved concurrency within ±15% (running_p50 = 8/32/96 exact); K applied per server
+  log (`num_speculative_tokens` none/1/2/4/8 verified); no OOM/preemption; steady window ≥60s.
+- **Caveat:** deterministic workload → sd understates total uncertainty (jitter only). C=96 K=4 sd=30.8 is one
+  outlier trial (1927.9/1904.2/1965.3); ranking unaffected.
+
+**Next (per pre-registration, not auto-launched):** P3 = SPEED-Bench throughput_2k K×C matrix to test whether the
+argmax flip persists/strengthens under long-prefill capacity saturation. Awaiting explicit go-ahead before launch.
+
 ### 2026-10-08 — P2 COMPLETE: H-load CONFIRMED (optimal K flips with load)
 45/45 cells done (K∈{none,1,2,4,8} × C∈{8,32,96} × 3 trials, mixed workload, eager).
 - C=8 (memory-bound): **K=8 best (+10.3% vs AR)**, monotone in K — verification tokens nearly free.
@@ -356,3 +381,28 @@ Largest single effect in the project so far: at C=96, "best fixed-K" loses 21% t
 Caveats: deterministic workload (variance = jitter only), unexplained TTFT anomaly (SD arms LOWER TTFT than AR
 at C=96 — flagged, not cited), ngram-specific magnitudes, eager mode. Full write-up: docs/phase4-p2-results.md.
 **P3 launched next (supervisor priority): SPEED-Bench throughput_2k (2k-token prefills) K × load matrix.**
+
+**Pre-registration — P5: DSpark-rule baseline vs LDM vs fixed-K (in-loop, same workload/load as P2/P3)**
+- **Arms:** AR (K=0 all), fixed K=4, fixed K=8, **LDM** (acceptance-only, local EMA window W=8, measured
+  cost curve c(k)), **DSpark-rule** (batch-level global greedy over empirical prefix-survival J_r[j] with the
+  hardware-profiled SPS(B) table from P2; objective Θ=τ·SPS(B)). All in-loop via sitecustomize monkey-patch
+  (run_server.sh CONTROLLER=ldm|dspark), eager mode, KMAX=8.
+- **Faithfulness notes (documented deviations):** DSpark uses a trained confidence head (ECE~1%) — we use
+  empirical per-position acceptance over the last W steps (causal). DSpark's SPS(B) is profiled offline — ours
+  too (P2 table), same spirit. DSpark's production system has no "SD off" outcome; P2 showed AR wins at C=96, so
+  we EXTEND both policies with an explicit all-K=0 fallback: after the greedy/EMA decision, if Θ(K=0 for all)
+  ≥ Θ(chosen allocation), take K=0 (recorded as a deviation, pre-specified). This is what makes "SD off"
+  reachable and is exactly the regime P2 says matters.
+- **Cells:** C ∈ {32, 96} × arm ∈ {AR, K4, K8, LDM, DSpark-rule} × 3 trials = 30 cells, dual-GPU, mixed workload
+  (P2 workload) first; if time permits repeat on SPEED-Bench 2k (P3 workload). AR/K4/K8 at these C already exist
+  from P2 — reuse those numbers, run only LDM + DSpark-rule (12 new cells ≈ 90 min dual-GPU).
+- **Hypothesis:** H-D: DSpark-rule ≥ best fixed-K at C=32 (its SPS(B) term should down-weight K as B grows), and
+  DSpark-rule < AR-oracle gap-closer at C=96 because per-request confidence keeps some requests at high K even
+  when the batch is saturated. LDM vs DSpark-rule: if LDM ≥ DSpark-rule without any load signal, the local
+  acceptance-only policy already suffices (weakens the serving-state motivation); if DSpark-rule > LDM, batch
+  coupling matters and our contribution must add live serving state on top.
+- **Falsification of "DSpark already solves it":** any arm using live serving state (queue/KV/prefill) beating
+  DSpark-rule by > trial noise at C=96. Conversely, if DSpark-rule ≈ AR within noise at C=96 and ≥ everything
+  else everywhere, our LDM idea has no measured edge on this hardware/workload — report that plainly.
+- **VALID conditions:** controller active line in server log ([dspark]/[ldm] banner); decision JSONL non-empty;
+  achieved concurrency within ±15% of target; K distribution from decision logs reported (not just throughput).
