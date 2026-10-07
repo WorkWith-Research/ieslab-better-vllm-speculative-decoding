@@ -20,6 +20,17 @@ Advisor (2026-10-07): direction is right; dynamic-SD-config work exists in quant
 → **first observe vLLM under load, find the concrete problems, quantify the effect
 of reconfiguration**, then differentiate. See `docs/observation-plan.md`.
 
+
+## Current evidence (2026-10-08)
+
+- **Serving load changes the optimal speculation configuration.** On the short mixed workload, K=8 wins at C=8, is near-tied with AR at C=32, and AR wins by ~21% over K=8 at C=96.
+- **Prefill pressure is an independent load axis.** At the same C=32, changing from short ISL (~50) to SPEED-Bench ~2k-token prefills flips the ranking from K=8≈AR to AR beating K=8 by ~13%.
+- **Request-level effects remain heterogeneous.** SPEED-Bench categories show large TPOT differences between low- and high-entropy requests even when aggregate throughput is near-tied.
+- **Neither tested adaptive baseline solves saturation.** At C=96, acceptance-only LDM remains ~20% below AR and the DSpark decision-rule reimplementation is ~25% below AR.
+- **Immediate hypothesis:** profitable speculation requires both request-level draftability and a **live serving-state/load-regime signal**, including the ability to select K=0 (SD off).
+
+Current Phase 4 status: **4.1✓ 4.2✓ 4.3✓ 4.5✓; 4.4 pending; 4.6 next.** Phase 5 is reserved for speculation-aware scheduler design after Phase 4 validation is complete.
+
 ## Pointer index
 
 | What | Where |
