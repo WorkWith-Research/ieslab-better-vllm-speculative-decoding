@@ -7,7 +7,7 @@
 #   fixed_k8 : ngram K=8, no controller  (upper bound = what LDM starts from)
 set -uo pipefail
 cd "$(dirname "$0")/.."
-DUR=90; RATE=6
+DUR=150; RATE=6; WARMUP=20
 
 run_one() {
   local name="$1"; shift
@@ -25,7 +25,7 @@ run_one() {
     MAX_MODEL_LEN=8192 CHUNK_TOKENS=2048 ENFORCE_EAGER=1 \
     ./experiments/run_server.sh "$name"
   for i in $(seq 1 60); do curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8100/health | grep -q 200 && break; sleep 5; done
-  .venv/bin/python experiments/mixed_workload_client.py 8100 "$DUR" "$RATE"
+  .venv/bin/python experiments/mixed_workload_client.py 8100 "$DUR" "$RATE" "$WARMUP"
   # capture final spec-decode stats from the server log (acceptance length)
   sleep 3
   kill $(cat "results/$name/server.pid") 2>/dev/null; wait 2>/dev/null

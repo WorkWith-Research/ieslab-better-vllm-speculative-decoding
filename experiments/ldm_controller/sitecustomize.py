@@ -71,8 +71,15 @@ def _install():
                       num_accepted_tokens, num_invalid_spec_tokens, request_id):
         try:
             hist = state[request_id]
-            hist.append(num_accepted_tokens)          # causal: update AFTER deciding below
-            kstar = _decide(list(hist))               # uses outcomes incl. this step's
+            # OPTIMISTIC cold start: a request with no history yet is drafted at KMAX so the
+            # LDM can OBSERVE deep (position 2+) acceptance. A pessimistic k*=1 start would be
+            # self-fulfilling: it only ever drafts 1 token, never sees position 2+, so its
+            # estimate stays J[2..]=0 and it is stuck at k*=1 forever (the collapse bug).
+            if not hist:
+                kstar = KMAX
+            else:
+                kstar = _decide(list(hist))
+            hist.append(num_accepted_tokens)         # record this step's outcome for next time
             self._ldm_state = getattr(self, "_ldm_state", {})
             self._ldm_state[request_id] = (num_draft_tokens, kstar, num_accepted_tokens)
             if ENFORCE:
@@ -107,7 +114,9 @@ def _install():
             try:
                 ks = getattr(self, "_ldm_kstar", None)
                 for req_id in getattr(draft_token_ids, "req_ids", ()):
-                    kstar = ks.get(req_id, 1) if ks else 1
+                    # Unknown request (first decode step, no acceptance observed yet) ->
+                    # optimistic KMAX so it can observe deep acceptance (matches the cold-start).
+                    kstar = ks.get(req_id, KMAX) if ks else KMAX
                     request = self.requests.get(req_id)
                     if request is not None and len(request.spec_token_ids) > kstar:
                         request.spec_token_ids = request.spec_token_ids[:kstar]
