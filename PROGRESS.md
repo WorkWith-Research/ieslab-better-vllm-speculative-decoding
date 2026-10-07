@@ -6,8 +6,8 @@ GitHub Project: https://github.com/orgs/WorkWith-Research/projects/1 (projectV2 
 
 | Item ID | Issue | Title | Status |
 |---|---|---|---|
-| `PVTI_lADOEyEOMs4Bl95-zg-9nck` | #1 | Phase 0: Environment setup | In progress |
-| `PVTI_lADOEyEOMs4Bl95-zg-9nc4` | #2 | Phase 1: Observation — fixed-K SD under load | Backlog |
+| `PVTI_lADOEyEOMs4Bl95-zg-9nck` | #1 | Phase 0: Environment setup | Done |
+| `PVTI_lADOEyEOMs4Bl95-zg-9nc4` | #2 | Phase 1: Observation — fixed-K SD under load | In progress |
 | `PVTI_lADOEyEOMs4Bl95-zg-9neU` | #3 | Phase 2: Analysis — oracle gap for dynamic K | Backlog |
 | `PVTI_lADOEyEOMs4Bl95-zg-9nfY` | #4 | Phase 3: Prototype — lightweight decision model | Backlog |
 
@@ -64,3 +64,22 @@ In review=`df73e18b` Done=`98236657`. Update via `scripts/set_item_status.sh <it
 - **Harness bug class fixed:** shell vars set at a script's top are NOT inherited by child scripts
   unless `export`ed. v1 sweep's `K`, `NUM_PROMPTS` were plain vars → children used defaults. All v2
   knobs are exported; `run_experiment.sh` now also accepts EXP as `$1`.
+
+### 2026-10-07 (cont.) — Phase 1 v2 K-sweep result + v3 launch
+- **v2 random-prompt K-sweep COMPLETE (16/16).** Full grid in `docs/phase1-results.md`.
+  - Throughput: **K=8 wins at every load** (r2 756 / r6 962 / r12 1038 / r24 1049 tok/s);
+    K=1 is 1.15–1.20× slower than K=8. SD@K=8 beats AR baseline by ~1.4–1.44× at matched load.
+  - Accept len scales ~linearly with K (1.96→7.7) and is **flat across load** (draft_acc_rate
+    0.95→0.82). GPU util ≈93–95%, KV-util max ≈0.20, zero preemptions at all loads.
+- **⚠️ NULL RESULT — no interior optimum-K, no load-driven shift on random prompts.**
+  ngram acceptance on templated random prompts is high (~0.9+) and nearly uniform across load, so
+  there is no over-speculation penalty to create an interior optimum → larger K always wins. The
+  predicted "optimum-K moves with load" pattern does not appear here. This reframes Phase 1:
+  *whether* an optimum-K exists (and where it sits) is governed by how low + heterogeneous the
+  per-request acceptance rate is — random prompts are an easy-draft case.
+- **Weak load-dependent signal found:** p99-TPOT tail penalty grows with K (K=8 ≈72–77 ms vs
+  K=1 ≈43–53 ms) → a tail-latency/SLO tradeoff, but small vs the throughput gain on this workload.
+- **v3 ShareGPT K-sweep launched** to reach the low/varied-acceptance regime: smoke (K=8,r6) gave
+  mean accept len ≈3.0 tok/step, draft_acc_rate ≈0.38 — ~2.5× lower than random → interior optimum-K
+  expected. `phase1_sweep_v3_sharegpt.sh` + `DATASET_PATH` knob (vLLM bench serve does NOT
+  auto-download ShareGPT; dataset at `data/`, git-ignored). Full grid running (~70 min).
