@@ -199,3 +199,18 @@ non-stationarity, E4 ragged-eager overhead — each with an isolation experiment
 K=2 vs K=8, 2 trials each. **Discriminating outcome:** if K=8's advantage over K=2 grows with C and
 vanishes at C=1 → batch-level verification coupling explains the live-vs-replay ranking flip. At
 C=1 the per-request ranking should match replay's (cross-check of c(k)).
+
+**Pre-registration — Priority C: model-based speculator reproduction (draft_model)**
+- **Question:** is heterogeneous profitable speculation depth a general serving phenomenon, or an
+  ngram artifact?
+- **Setup:** target Qwen2.5-7B-Instruct + draft **Qwen2.5-0.5B-Instruct** (same family/vocab,
+  `method=draft_model` — the officially supported model-based path in vLLM 0.19.1; EAGLE-Qwen
+  checkpoints remain incompatible). K ∈ {2,4,8}, eager mode for comparability with the ngram grid.
+- **Measurements:** (a) fixed-K sweep on the mixed workload (does an interior/best-K exist?);
+  (b) per-request acceptance heterogeneity via `spec_hook` (natural-K span + CV vs ngram's 1.18–8.82,
+  CV≈0.51); (c) adaptive-K live comparison if (a)+(b) show meaningful headroom.
+- **Falsification of the general-phenomenon claim:** if draft-model per-request natural-K CV ≪ ngram's
+  AND fixed-K ranking is flat → heterogeneity was an ngram artifact; pivot the story to
+  drafter-dependent speculation depth.
+- **VALID conditions:** draft model loads (no arch errors); acceptance length >1 on templated
+  prompts (sanity: drafting actually works); same concurrency/window/warmup as Priority A.
