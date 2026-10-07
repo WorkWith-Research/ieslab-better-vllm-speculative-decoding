@@ -29,7 +29,7 @@ SPID=$!
 
 if [ "$WORKLOAD" = "speedb" ]; then
   .venv/bin/python experiments/speed_bench_client.py "$PORT" "data/speed_bench/throughput_${ISL}" \
-    "$DUR" "$C" "$WARMUP" "/tmp/${tag}.jsonl" 256 | tee "results/p2/${tag}_client.out"
+    "$DUR" "$C" "$WARMUP" "/tmp/${tag}.jsonl" "${MAXTOK:-512}" | tee "results/p2/${tag}_client.out"
 else
   .venv/bin/python experiments/latency_client.py "$PORT" "$DUR" "$C" "$WARMUP" "/tmp/${tag}.jsonl" 256 \
     | tee "results/p2/${tag}_client.out"
