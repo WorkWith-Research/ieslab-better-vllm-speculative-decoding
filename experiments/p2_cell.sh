@@ -24,7 +24,7 @@ done
 [ "$up" = "1" ] || { echo "SERVER FAILED $tag"; kill $(cat "results/$tag/server.pid") 2>/dev/null; exit 1; }
 
 .venv/bin/python experiments/scrape_metrics.py --port "$PORT" --gpu "$GPU" \
-  --out "results/p2/C${C}_k${K}_t${TRIAL}_metrics.jsonl" --interval 0.5 > "results/p2/C${C}_k${K}_t${TRIAL}_scrape.out" 2>&1 &
+  --out "results/p2/${tag}_metrics.jsonl" --interval 0.5 > "results/p2/${tag}_scrape.out" 2>&1 &
 SPID=$!
 
 if [ "$WORKLOAD" = "speedb" ]; then

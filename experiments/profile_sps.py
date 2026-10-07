@@ -34,7 +34,9 @@ def main():
             pts = []
             for t in (1, 2, 3):
                 cl = f"{base}/p2_k{K}_c{C}_t{t}_mixed_client.out"
-                mt = f"{base}/C{C}_k{K}_t{t}_metrics.jsonl"
+                mt_new = f"{base}/p2_k{K}_c{C}_t{t}_mixed_metrics.jsonl"
+                mt_old = f"{base}/C{C}_k{K}_t{t}_metrics.jsonl"
+                mt = mt_new if os.path.exists(mt_new) else mt_old
                 if not (os.path.exists(cl) and os.path.exists(mt)):
                     continue
                 tok, thr = parse_client(cl)

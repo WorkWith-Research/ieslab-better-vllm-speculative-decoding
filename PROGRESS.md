@@ -334,3 +334,12 @@ retried in the same turn. Post it on the next opportunity (content unchanged).
   both), plus waiting/KV/GPU from scraper. Official SPEED-Bench metric = output tokens/sec; we report it plus the
   latency breakdown (theirs doesn't separate prefill/decode effects).
 - **VALID conditions:** same as P2 (achieved concurrency ±15%, steady window ≥60s, K applied per server log).
+
+**P2 caveat (recorded during run):** the mixed workload is fully deterministic (fixed seed 1234 + greedy
+decoding), so identical trials produce nearly identical token counts (verified: K=none C=8 trials t1/t2/t3 all
+51200 steady tokens, 393.8 tok/s; raw per-request timestamps differ). Trial variance therefore measures
+scheduling/queueing jitter only, not workload sampling noise. This is acceptable for ranking K (the workload
+mix is identical across arms — the comparison is controlled), but the ±sd reported by analyze_p2.py understates
+total uncertainty. SPEED-Bench cells (P3) use 1536 distinct prompts → real per-trial variation. If P2 shows a
+near-tie between adjacent K values at any C, that tie is NOT evidence of equivalence — resolve with P3 or a
+seed-varied repeat before drawing conclusions.

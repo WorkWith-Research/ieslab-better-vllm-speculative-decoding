@@ -8,6 +8,8 @@ import json, os, re, sys, statistics as st
 BASE = "results/p2"
 KS = ["none", "1", "2", "4", "8"]
 CS = [8, 32, 96]
+# workload tag in client filename (p2_cell.sh): mixed -> "mixed", speedb 2k -> "speedb_2k"
+TAG = os.environ.get("P2_TAG", "mixed")
 
 def parse_client(path):
     # last line: concurrency=C ok=N err=E steady_out_tokens=T steady_throughput_tok_s=X
@@ -47,8 +49,10 @@ def main():
         for C in CS:
             trials = []
             for t in (1, 2, 3):
-                cl = f"{BASE}/p2_k{K}_c{C}_t{t}_mixed_client.out"
-                mt = f"{BASE}/C{C}_k{K}_t{t}_metrics.jsonl"
+                cl = f"{BASE}/p2_k{K}_c{C}_t{t}_{TAG}_client.out"
+                mt_new = f"{BASE}/p2_k{K}_c{C}_t{t}_{TAG}_metrics.jsonl"
+                mt_old = f"{BASE}/C{C}_k{K}_t{t}_metrics.jsonl"  # pre-rename cells (P2 run)
+                mt = mt_new if os.path.exists(mt_new) else mt_old
                 if not os.path.exists(cl):
                     continue
                 c = parse_client(cl)
