@@ -12,7 +12,7 @@ GitHub Project: https://github.com/orgs/WorkWith-Research/projects/1 (projectV2 
 | `PVTI_lADOEyEOMs4Bl95-zg-9nfY` | #4 | Phase 3: Prototype — per-request dynamic-K controller + live validation | Done |
 | `PVTI_lADOEyEOMs4Bl95-zg_JZ9c` | #10 | Phase 4: Realistic-workload validation — load, SPEED-Bench, heterogeneous ISL/OSL, DSpark | In progress |
 
-**Current Phase-4 checkpoint:** Phase 4.1 saturation characterization, Phase 4.2 fixed-K × load, and Phase 4.3 SPEED-Bench long-prefill validation are complete. Phase 4.4 heterogeneous ISL × OSL workload and Phase 4.5 DSpark-rule vs LDM remain.
+**Current Phase-4 checkpoint:** Phase 4.1 saturation characterization, Phase 4.2 fixed-K × load, Phase 4.3 SPEED-Bench long-prefill validation, and Phase 4.5 DSpark-rule vs LDM are complete. Phase 4.4 heterogeneous ISL × OSL remains outstanding; Phase 4.6 live-load-aware adaptive speculation is the next controller experiment.
 
 Status option IDs: Backlog=`f75ad846` Ready=`61e4505c` In progress=`47fc9ee4`
 In review=`df73e18b` Done=`98236657`. Update via `scripts/set_item_status.sh <item-id> <option-id>`.
@@ -423,9 +423,9 @@ at C=96 — flagged, not cited), ngram-specific magnitudes, eager mode. Full wri
   is insufficient; need both concurrency AND prefill-intensity signals. Full write-up: docs/phase4-p3-results.md.
 **Next: Phase 4.5 — DSpark-rule vs LDM in-loop (directly answers supervisor's "are you using DSpark?").**
 
-### 2026-10-08 — P5 COMPLETE: DSpark-rule baseline vs LDM (direct answer to supervisor's "are you using DSpark?")
-12/12 cells (LDM + DSpark-rule arms; AR/K4/K8 reused from P2), mixed workload, C∈{32,96}×3.
-- **C=32:** all arms within ~1% (SD neutral at transition — as P2 predicted).
+### 2026-10-08 — Phase 4.5 COMPLETE: DSpark-rule baseline vs LDM
+12/12 cells (LDM + DSpark-rule arms; AR/K4/K8 reused from Phase 4.2), mixed workload, C∈{32,96}×3.
+- **C=32:** all arms within ~1% (SD neutral at transition — as Phase 4.2 predicted).
 - **C=96 (saturated): AR 2457.6 wins by 20–25%. DSpark-rule is the WORST arm (1853.1, −24.6%)** — worse than
   fixed K8 (1947.6). LDM (1960.1) best adaptive but still −20.2% vs AR.
 - **Mechanism (decision logs):** DSpark-rule turns SD off for ~30% of requests (its SPS(B) term works) but keeps
@@ -433,9 +433,17 @@ at C=96 — flagged, not cited), ngram-specific magnitudes, eager mode. Full wri
   acceptance (high on this repetitive workload) while the profiled SPS(B) curve (taken at uniform B) underestimates
   the true step-time inflation from per-request variable K. LDM never commits to SD-off (frac K=0 = 1.2%) — it is
   acceptance-only and has no saturation notion.
-- **Interpretation:** the load-driven-K premise is real (P2) but DSpark's decision rule does NOT capture it;
+- **Interpretation:** the load-driven-K premise is real (Phase 4.2) but DSpark's decision rule does NOT capture it;
   "just adopt DSpark" is measured-rebutted. The missing ingredient = a LIVE load-regime signal (measured steps/s,
   TPOT trend, or B vs SPS(B) knee) that neither baseline consumes → the actual LDM contribution must augment
-  acceptance with serving state so it can commit to SD-off at saturation. P5 motivates Phase-4b (load-aware LDM),
-  which should recover the 20–25% gap. Full write-up: docs/phase4-p5-results.md.
-**Phase 4 status: P1✓ P2✓ P3✓ P5✓ — supervisor memo fully addressed. Next: Phase-4b load-aware LDM.**
+  acceptance with serving state so it can commit to SD-off at saturation. Phase 4.5 motivates Phase 4.6 (live-load-aware adaptive speculation),
+  which will test whether explicit live load awareness can recover the 20–25% gap. Full write-up: docs/phase4-p5-results.md.
+**Phase 4 status: 4.1✓ 4.2✓ 4.3✓ 4.5✓; 4.4 heterogeneous ISL×OSL remains. Next controller experiment: Phase 4.6 live-load-aware adaptive speculation. Phase 5 is reserved for scheduler-level design after Phase 4 closes.**
+
+
+### 2026-10-08 — Phase numbering / current-state normalization
+- Canonical Phase-4 subphase names are **Phase 4.1–4.6**; older P1/P2/P3/P5 labels in historical logs and result paths are retained only for provenance/backward compatibility.
+- **Complete:** Phase 4.1 saturation characterization; Phase 4.2 fixed-K × load; Phase 4.3 SPEED-Bench long-prefill; Phase 4.5 DSpark-rule vs LDM.
+- **Outstanding:** Phase 4.4 heterogeneous ISL × OSL mixed workload.
+- **Next controller experiment:** Phase 4.6 live-load-aware adaptive speculation (request acceptance + live serving-state/load regime → K including SD-off).
+- **Phase 5 is not started.** It is reserved for speculation-aware scheduler design/implementation if Phase 4 shows a scheduler-level gap after the remaining validation.
