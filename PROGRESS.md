@@ -406,3 +406,16 @@ at C=96 — flagged, not cited), ngram-specific magnitudes, eager mode. Full wri
   else everywhere, our LDM idea has no measured edge on this hardware/workload — report that plainly.
 - **VALID conditions:** controller active line in server log ([dspark]/[ldm] banner); decision JSONL non-empty;
   achieved concurrency within ±15% of target; K distribution from decision logs reported (not just throughput).
+
+### 2026-10-08 — P3 COMPLETE: SPEED-Bench 2k (long prefills) reveals a SECOND load axis + per-request structure
+30/30 cells (K∈{none,1,2,4,8} × C∈{32,96} × 3 trials, SPEED-Bench throughput_2k, ISL p50=1986/max 3980, pre-tokenized).
+- **C=32 (moderate load, heavy prefill stream): AR wins by up to +13% over K=8.** ~2k prefills arriving continuously →
+  SD verification tokens crowd out prefill chunks in the 2048 budget → prefills finish slower → fewer reach decode.
+  This is the H-S2/H-S3 prefill-interference effect. Contrast P2 (ISL~50) at SAME C=32: K=8 was +1.0% vs AR.
+  Same concurrency, different ISL → OPPOSITE ranking.
+- **C=96 (queue-saturated, TTFT p50 ~15s):** throughput pinned ~610 tok/s regardless of K; K=8 vs AR = +0.7% (null).
+- **Per-category split (the LDM finding):** at C=96, K=8 cuts low_entropy TPOT by 57% (38 vs 88ms) but inflates
+  high_entropy TPOT by +32–60% (117 vs 88ms). Aggregate hides it; a uniform-K policy is wrong for ≥half the traffic.
+- **Two load axes:** C (P2) and ISL (P3) independently move argmax_K → a single "GPU load" scalar (DSpark's SPS(B))
+  is insufficient; need both concurrency AND prefill-intensity signals. Full write-up: docs/phase4-p3-results.md.
+**Next: P5 — DSpark-rule vs LDM in-loop (directly answers supervisor's "are you using DSpark?").**

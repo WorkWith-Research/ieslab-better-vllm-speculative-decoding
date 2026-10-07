@@ -32,14 +32,19 @@ OUT = os.environ.get("VLLM_DSPARK_OUT")
 
 
 def _load_sps(path):
-    # table: list of {B, SPS} -> sorted points for linear interpolation
+    # Accepts either format:
+    #   flat cell lines:  {"K":..,"C":..,"B":..,"SPS":..,...}   (profile_sps.py output)
+    #   nested lines:     {"points":[{"B":..,"SPS":..},...]}
     pts = []
     if path and os.path.exists(path):
         for line in open(path):
             r = json.loads(line)
-            for p in r.get("points", []):
-                if p.get("B") and p.get("SPS"):
-                    pts.append((p["B"], p["SPS"]))
+            if "points" in r:
+                for p in r["points"]:
+                    if p.get("B") and p.get("SPS"):
+                        pts.append((p["B"], p["SPS"]))
+            elif r.get("B") and r.get("SPS"):
+                pts.append((r["B"], r["SPS"]))
     pts = sorted(set(pts))
     return pts
 
