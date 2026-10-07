@@ -16,3 +16,6 @@ models/
 # Misc
 .DS_Store
 /tmp/
+
+# local datasets (large)
+data/

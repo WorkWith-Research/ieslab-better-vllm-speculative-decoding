@@ -16,6 +16,7 @@ GPU="${GPU:-0}"
 NUM_PROMPTS="${NUM_PROMPTS:-40}"
 REQUEST_RATE="${REQUEST_RATE:-inf}"   # inf = all at once (closed loop, max concurrency)
 DATASET="${DATASET:-random}"          # random | sharegpt
+DATASET_PATH="${DATASET_PATH:-}"      # required for sharegpt (no auto-download)
 IN_LEN="${IN_LEN:-256}"
 OUT_LEN="${OUT_LEN:-256}"
 MAX_CONCURRENCY="${MAX_CONCURRENCY:-0}"  # 0 = unlimited
@@ -58,6 +59,10 @@ BENCH_ARGS=(--backend openai --host 127.0.0.1 --port $PORT
   --save-result --result-dir results/$EXP --result-filename $EXP.bench.json)
 if [ "$DATASET" = "random" ]; then
   BENCH_ARGS+=(--random-input-len $IN_LEN --random-output-len $OUT_LEN --random-range-ratio 0.3)
+fi
+if [ "$DATASET" = "sharegpt" ]; then
+  if [ -z "$DATASET_PATH" ]; then echo "[exp $EXP] sharegpt needs DATASET_PATH"; exit 1; fi
+  BENCH_ARGS+=(--dataset-path "$DATASET_PATH")
 fi
 if [ "$MAX_CONCURRENCY" != "0" ]; then
   BENCH_ARGS+=(--max-concurrency $MAX_CONCURRENCY)
