@@ -1,6 +1,12 @@
 {
   "version": 1,
   "skills": {
+    "gh": {
+      "source": "cli/cli",
+      "sourceType": "github",
+      "skillPath": "skills/gh/SKILL.md",
+      "computedHash": "ff23d50fee0f42708ffaf56686c7a34a2f8b7e1247f04d47033095ba33863418"
+    },
     "git-commit": {
       "source": "github/awesome-copilot",
       "sourceType": "github",
