@@ -58,6 +58,28 @@ the oracle is a valid upper bound.
   3. Single drafter (ngram) + single model. EAGLE's lower/varied acceptance should widen both the
      gap and the LDM's advantage.
 
+## In-loop prototype (validated live) — `experiments/ldm_controller/sitecustomize.py`
+The LDM now runs **inside the serving loop**, not just offline replay. Two monkey-patches on
+`Scheduler` (no vLLM source edits, env-gated by `VLLM_LDM_OUT`):
+
+- `make_spec_decoding_stats` — fires once per request per decode step with that request's `K` and
+  `acc`; updates its sliding-window acceptance history and computes k\*.
+- `update_from_output` — logs one line/step: `{t, n_active, decisions:[{req, K, k*, acc_last}]}`.
+
+Because vLLM processes outputs *before* storing next-step drafts (engine/core.py:415→520), a K update
+at step t takes effect at t+1 — genuinely causal. **Validated on a live smoke workload** (repetitive +
+diverse prompts, ngram K=8): the controller emits per-request decisions every step and k\* tracks
+observed acceptance — high-acceptance steps → k\*=4–6, low-acceptance → k\*=1. The decision function is
+unit-verified (a request consistently accepting 4/8 drafts → k\*=4). This confirms the LDM's decision
+signal (live per-request acceptance) is available and usable in real time with zero vLLM changes.
+
+**What this prototype does NOT yet do:** change the worker's actual draft depth. Variable-K *execution*
+needs the worker buffer/CUDA-graph patch surface (`docs/vllm-code-audit.md` items 3–4). The logged k\*
+decisions are exactly what that execution layer would schedule, so their realized value is measurable
+against fixed-K once the execution layer lands. (ngram's spiky acceptance — good only where text repeats
+in context — makes the benefit most visible on sustained-repetition workloads or a smoother drafter like
+EAGLE.)
+
 ## Reproduce
 ```
 # measured cost model from Phase-1 random K-sweep + ShareGPT per-request profiles
