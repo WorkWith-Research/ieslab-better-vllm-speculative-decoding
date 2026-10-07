@@ -63,64 +63,84 @@ def load_run(exp):
 
 def main():
     import re as _re
-    # Exclude archived/invalid dirs (leading underscore) and non-K sweep runs.
+    # Exclude archived/invalid dirs (leading underscore). Two sweep families:
+    #   random  : K{K}_r{rate}          (v2)
+    #   sharegpt: S_K{K}_r{rate}        (v3)
     all_dirs = [e for e in os.listdir(RESULTS)
                 if os.path.isdir(os.path.join(RESULTS, e)) and not e.startswith("_")]
-    k_runs = sorted([e for e in all_dirs if _re.fullmatch(r"K\d+_r\d+", e)])
-    runs = [load_run(e) for e in k_runs]
-
     def parse(exp):
-        m = _re.fullmatch(r"K(\d+)_r(\d+)", exp)
-        return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
-
-    # ---- K x load pivot: output throughput + mean accept len + TPOT ----
-    ks = sorted({parse(e)[0] for e in k_runs})
-    rates = sorted({parse(e)[1] for e in k_runs})
-    def cell(k, r, field):
-        for run in runs:
-            if parse(run["exp"]) == (k, r) and run.get(field) is not None:
-                return run[field]
-        return None
+        m = _re.fullmatch(r"S?_?K(\d+)_r(\d+)", exp)
+        return (int(m.group(1)), int(m.group(2))) if m else None
+    families = {
+        "random":   sorted([e for e in all_dirs if _re.fullmatch(r"K\d+_r\d+", e)]),
+        "sharegpt": sorted([e for e in all_dirs if _re.fullmatch(r"S_K\d+_r\d+", e)]),
+    }
 
     def fmt(v, nd=1):
         if v is None: return "-"
         if isinstance(v, float): return f"{v:.{nd}f}"
         return str(v)
 
-    print("\n=== K x load: OUTPUT THROUGHPUT (tok/s) ===")
-    hdr = ["rate\\K"] + [f"K={k}" for k in ks] + ["best-K"]
-    print("| " + " | ".join(hdr) + " |")
-    print("|" + "---|" * len(hdr))
-    best_by_rate = {}
-    for r in rates:
-        row = [f"r{r}"]
-        vals = {k: cell(k, r, "output_throughput") for k in ks}
-        row += [fmt(vals[k]) for k in ks]
-        valid = {k: float(v) for k, v in vals.items() if v is not None}
-        bk = max(valid, key=lambda k: valid[k]) if valid else None
-        best_by_rate[r] = bk
-        row.append(f"K={bk}" if bk else "-")
-        print("| " + " | ".join(row) + " |")
+    all_runs = []
+    shift_by_family = {}
+    for fam, exps in families.items():
+        runs = [load_run(e) for e in exps]
+        all_runs += runs
+        if not runs: continue
+        parsed = [p for p in (parse(e) for e in exps) if p]
+        ks = sorted({k for (k, _r) in parsed})
+        rates = sorted({r for (_k, r) in parsed})
+        def cell(k, r, field):
+            for run in runs:
+                if parse(run["exp"]) == (k, r) and run.get(field) is not None:
+                    return run[field]
+            return None
+        print(f"\n################ {fam.upper()} ################")
+        hdr = ["rate\\K"] + [f"K={k}" for k in ks] + ["best-K"]
+        print("\n=== OUTPUT THROUGHPUT (tok/s) ===")
+        print("| " + " | ".join(hdr) + " |"); print("|" + "---|" * len(hdr))
+        best_by_rate = {}
+        for r in rates:
+            vals = {k: cell(k, r, "output_throughput") for k in ks}
+            valid = {k: float(v) for k, v in vals.items() if v is not None}
+            bk = max(valid, key=lambda k: valid[k]) if valid else None
+            best_by_rate[r] = bk
+            print("| " + " | ".join([f"r{r}"] + [fmt(vals[k]) for k in ks] + [f"K={bk}" if bk else "-"]) + " |")
+        shift_by_family[fam] = best_by_rate
 
-    print("\n=== K x load: MEAN ACCEPT LEN (tok/step) ===")
-    print("| " + " | ".join(hdr) + " |")
-    print("|" + "---|" * len(hdr))
-    for r in rates:
-        row = [f"r{r}"] + [fmt(cell(k, r, "mean_accept_len"), 2) for k in ks] + [""]
-        print("| " + " | ".join(row) + " |")
+        print("\n=== MEAN ACCEPT LEN (tok/step) ===")
+        print("| " + " | ".join(hdr) + " |"); print("|" + "---|" * len(hdr))
+        for r in rates:
+            print("| " + " | ".join([f"r{r}"] + [fmt(cell(k, r, "mean_accept_len"), 2) for k in ks] + [""]) + " |")
 
-    print("\n=== K x load: MEAN TPOT (ms, lower=better) ===")
-    print("| " + " | ".join(hdr) + " |")
-    print("|" + "---|" * len(hdr))
-    for r in rates:
-        row = [f"r{r}"] + [fmt(cell(k, r, "mean_tpot_ms")) for k in ks] + [""]
-        print("| " + " | ".join(row) + " |")
+        print("\n=== DRAFT ACC RATE (per-position, higher=better drafts) ===")
+        print("| " + " | ".join(hdr) + " |"); print("|" + "---|" * len(hdr))
+        for r in rates:
+            print("| " + " | ".join([f"r{r}"] + [fmt(cell(k, r, "draft_acc_rate"), 2) for k in ks] + [""]) + " |")
 
-    print("\n=== OPTIMUM-K SHIFT (throughput-maximizing K per load) ===")
-    for r in rates:
-        print(f"  rate={r:>2} req/s -> best K = {best_by_rate[r]}")
+        print("\n=== MEAN TPOT (ms, lower=better) ===")
+        print("| " + " | ".join(hdr) + " |"); print("|" + "---|" * len(hdr))
+        for r in rates:
+            print("| " + " | ".join([f"r{r}"] + [fmt(cell(k, r, "mean_tpot_ms")) for k in ks] + [""]) + " |")
 
-    # ---- flat table + csv (all runs) ----
+        print("\n=== OPTIMUM-K SHIFT (throughput-maximizing K per load) ===")
+        for r in rates:
+            print(f"  rate={r:>2} req/s -> best K = {best_by_rate[r]}")
+
+    # ---- cross-dataset comparison of optimum-K shift ----
+    if len(shift_by_family) > 1:
+        print("\n################ OPTIMUM-K SHIFT: random vs sharegpt ################")
+        rates = sorted(set().union(*[set(v.keys()) for v in shift_by_family.values()]))
+        hdr = ["rate"] + list(shift_by_family.keys()) + ["shift?"]
+        print("| " + " | ".join(hdr) + " |"); print("|" + "---|" * len(hdr))
+        for r in rates:
+            row = [f"r{r}"] + [f"K={shift_by_family[f].get(r)}" if shift_by_family.get(f, {}).get(r) else "-"
+                               for f in shift_by_family]
+            vals = {f: shift_by_family[f].get(r) for f in shift_by_family if shift_by_family[f].get(r)}
+            row.append("yes" if len(set(vals.values())) > 1 else "no")
+            print("| " + " | ".join(row) + " |")
+
+    # ---- flat table + csv (all runs, both families) ----
     cols = ["exp", "completed", "duration", "output_throughput", "mean_tpot_ms",
             "p99_tpot_ms", "mean_ttft_ms", "p99_ttft_ms", "running_p50",
             "waiting_p50", "kv_util_max", "gpu_util_p50", "spec_decode_num_drafts",
@@ -129,13 +149,13 @@ def main():
     with open(os.path.join(RESULTS, "summary.csv"), "w", newline="") as f:
         w = _csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
         w.writeheader()
-        for r in runs:
+        for r in all_runs:
             w.writerow(r)
     print("\n| " + " | ".join(cols) + " |")
     print("|" + "---|" * len(cols))
-    for r in runs:
+    for r in all_runs:
         print("| " + " | ".join(fmt(r.get(c), 1 if c in ("duration",) else 2) for c in cols) + " |")
-    print(f"\nwrote {os.path.join(RESULTS, 'summary.csv')} ({len(runs)} runs)")
+    print(f"\nwrote {os.path.join(RESULTS, 'summary.csv')} ({len(all_runs)} runs)")
 
 if __name__ == "__main__":
     main()

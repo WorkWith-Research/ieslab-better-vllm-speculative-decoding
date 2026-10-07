@@ -44,13 +44,60 @@ templated prompts are an easy draft case → no shift. To observe the predicted 
 benefit we need a regime with lower, more varied acceptance — which ShareGPT's diverse
 conversational text provides (see v3 below).
 
-## v3 (ShareGPT) — RUNNING
-Motivation: realistic diverse prompts should give **lower and more heterogeneous** ngram
-acceptance. Smoke check (K=8, r6): mean accept len ≈ **3.0 tok/step**, draft_acc_rate ≈ 0.38
-(vs K=8 random: 7.5 / 0.82) — i.e. a ~2.5× lower acceptance regime where an interior
-optimum-K and load-driven shift are expected to emerge.
+## v3 (ShareGPT) — COMPLETE, 16/16 runs
+Realistic diverse conversational prompts → **lower, more heterogeneous** ngram acceptance:
+draft_acc_rate @K=8 ≈ 0.34–0.41 (vs random 0.79–0.86); mean accept len @K=8 ≈ 3.8 (vs 7.5).
 
-Full grid pending; results will be appended here with the same pivots + optimum-K-shift table.
+### Output throughput (tok/s)
+| rate | K=1 | K=2 | K=4 | K=8 | best-K |
+|---|---|---|---|---|---|
+| r2  | 400 | 398 | **400** | 394 | K=4 |
+| r6  | 657 | 660 | **680** | 664 | K=4 |
+| r12 | 664 | 677 | **730** | 693 | K=4 |
+| r24 | 676 | 706 | 728 | **729** | K=8 |
+
+### Draft acceptance rate (per-position) — the regime driver
+| rate | K=1 | K=2 | K=4 | K=8 |
+|---|---|---|---|---|
+| r2  | 0.72 | 0.69 | 0.58 | 0.41 |
+| r6  | 0.73 | 0.56 | 0.47 | 0.36 |
+| r12 | 0.74 | 0.56 | 0.56 | 0.34 |
+| r24 | 0.79 | 0.74 | 0.56 | 0.35 |
+
+## ★ Headline: the optimum-K is workload-dependent (K=4/K=8 crossover)
+
+Comparing the two regimes at matched load — which K maximizes output throughput:
+
+| rate | random (high acc) | sharegpt (low acc) | K=8 vs K=4 |
+|---|---|---|---|
+| r2  | **K=8** | **K=4** | random +5.1% / sharegpt −1.6% |
+| r6  | **K=8** | **K=4** | +2.9% / −2.3% |
+| r12 | **K=8** | **K=4** | +10.6% / −5.1% |
+| r24 | **K=8** | K=8 (tie) | +7.5% / +0.2% |
+
+**The single variable that moves the optimum-K is the draft acceptance rate, not the load.**
+- High acceptance (random): every extra drafted token is mostly accepted → longer K always wins;
+  over-speculation penalty ≈ 0 → **K=8 best at all loads**.
+- Low acceptance (ShareGPT): drafts fail early, so long chains waste verification compute on
+  rejected tokens → an **interior optimum appears (K=4)**; only at the highest load (r24) does K=8
+  edge back in (batching amortizes the draft cost).
+
+This is exactly the headroom a dynamic scheduler should capture: **a fixed-K policy loses up to
+~5–10% throughput** by picking the wrong K for the workload's acceptance regime. A Lightweight
+Decision Model that reads live per-request acceptance (which we now measure) and sets K per-request
+can recover it — this is the Phase-2 oracle-gap target.
+
+### Caveats / what's NOT yet shown
+1. **Load-driven shift at fixed workload is weak.** Within ShareGPT, best-K moves only K=4→K=8
+   between r12 and r24 (a 2-step edge effect), not a clean monotonic shift. The dominant axis is
+   *acceptance regime*, with load as a secondary modifier.
+2. **Margins are modest** (2–10%) and on a single model/drafter (ngram). ngram acceptance is
+   itself load-insensitive here, so we vary the regime via the dataset, not via load alone.
+3. **Per-request heterogeneity** (the LDM's real target) is not yet measured — these are
+   per-run aggregates. Phase 2 needs per-request accept-len distribution under mixed workloads to
+   show that *within* one batch, requests want different K.
+4. Single drafter (ngram). Real EAGLE drafts have lower + more variable acceptance → the crossover
+   should be sharper; deferred to a later phase (EAGLE-Qwen2 incompatible with vLLM 0.19.1).
 
 ## AR baseline (no speculative decoding), random prompts
 | rate | out_tok/s | mean_tpot_ms | SD K=8 speedup |

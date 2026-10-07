@@ -83,3 +83,19 @@ In review=`df73e18b` Done=`98236657`. Update via `scripts/set_item_status.sh <it
   mean accept len ≈3.0 tok/step, draft_acc_rate ≈0.38 — ~2.5× lower than random → interior optimum-K
   expected. `phase1_sweep_v3_sharegpt.sh` + `DATASET_PATH` knob (vLLM bench serve does NOT
   auto-download ShareGPT; dataset at `data/`, git-ignored). Full grid running (~70 min).
+
+### 2026-10-07 (cont.) — Phase 1 v3 result: optimum-K is workload-dependent (HEADLINE)
+- **v3 ShareGPT K-sweep COMPLETE (16/16).** draft_acc_rate @K=8 ≈ 0.34–0.41 (vs random 0.79–0.86).
+- **★ The optimum-K flips with the acceptance regime, not primarily with load:**
+  - random (high acc): **K=8 best at every load** (over-speculation penalty ≈ 0).
+  - ShareGPT (low acc): **interior optimum K=4** at r2/r6/r12; K=8 only edges back in at r24.
+  - Crossover is clean: K=8 vs K=4 = random +5.1/+2.9/+10.6/+7.5% (r2/6/12/24) vs sharegpt
+    −1.6/−2.3/−5.1/+0.2%. Full table in `docs/phase1-results.md`.
+- **Implication for LDM:** a fixed-K policy loses ~5–10% throughput by picking the wrong K for the
+  workload's acceptance regime → concrete Phase-2 oracle-gap target. The decision input that matters
+  most is **live draft acceptance rate**, which we now measure per-run (and can get per-request).
+- **Caveats logged:** load-driven shift at fixed workload is weak (K=4→8 only r12→r24); margins
+  modest + single ngram drafter; per-request heterogeneity not yet measured (Phase 2); real EAGLE
+  drafts should sharpen the crossover (deferred — EAGLE-Qwen2 incompatible with vLLM 0.19.1).
+- `analyze.py` now handles both families (`K{K}_r{rate}` random + `S_K{K}_r{rate}` sharegpt) and
+  emits a cross-dataset optimum-K-shift comparison. All 32 runs → `results/summary.csv`.
