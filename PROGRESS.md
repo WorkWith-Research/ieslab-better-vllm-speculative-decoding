@@ -7,8 +7,8 @@ GitHub Project: https://github.com/orgs/WorkWith-Research/projects/1 (projectV2 
 | Item ID | Issue | Title | Status |
 |---|---|---|---|
 | `PVTI_lADOEyEOMs4Bl95-zg-9nck` | #1 | Phase 0: Environment setup | Done |
-| `PVTI_lADOEyEOMs4Bl95-zg-9nc4` | #2 | Phase 1: Observation — fixed-K SD under load | In progress |
-| `PVTI_lADOEyEOMs4Bl95-zg-9neU` | #3 | Phase 2: Analysis — oracle gap for dynamic K | Backlog |
+| `PVTI_lADOEyEOMs4Bl95-zg-9nc4` | #2 | Phase 1: Observation — fixed-K SD under load | Done |
+| `PVTI_lADOEyEOMs4Bl95-zg-9neU` | #3 | Phase 2: Analysis — oracle gap for dynamic K | In progress |
 | `PVTI_lADOEyEOMs4Bl95-zg-9nfY` | #4 | Phase 3: Prototype — lightweight decision model | Backlog |
 
 Status option IDs: Backlog=`f75ad846` Ready=`61e4505c` In progress=`47fc9ee4`
