@@ -1,14 +1,14 @@
-# Phase 4 — P5: DSpark-rule vs LDM in-loop (result)
+# Phase 4.5 — DSpark-rule vs LDM in-loop (result)
 
 **Question (supervisor):** "Are you using/comparing DSpark?" We reimplemented DSpark's *decision rule*
 (batch-level global greedy over per-position prefix-survival with a hardware-profiled SPS(B) curve, objective
 Θ=τ·SPS(B)) as an in-loop baseline on our vLLM prototype, and compared it against our acceptance-only LDM and
-fixed-K baselines at the two load regimes P2 identified. Full faithfulness notes + deviations (incl. the
+fixed-K baselines at the two load regimes Phase 4.2 identified. Full faithfulness notes + deviations (incl. the
 pre-registered SD-off fallback) in `docs/related-work-dspark.md` §5 and PROGRESS.md.
 
-**Setup:** Qwen2.5-7B-Instruct, 1× RTX 3090, vLLM 0.19.1 eager, mixed workload (P2), C ∈ {32, 96} × 3 trials.
-Arms: AR / K4 / K8 (reused from P2 cells) + LDM (local EMA acceptance, measured cost c(k)) + DSpark-rule
-(batch-greedy, SPS(B) table from P2). All in-loop via sitecustomize monkey-patch; KMAX=8.
+**Setup:** Qwen2.5-7B-Instruct, 1× RTX 3090, vLLM 0.19.1 eager, mixed workload (Phase 4.2), C ∈ {32, 96} × 3 trials.
+Arms: AR / K4 / K8 (reused from Phase 4.2 cells) + LDM (local EMA acceptance, measured cost c(k)) + DSpark-rule
+(batch-greedy, SPS(B) table from Phase 4.2). All in-loop via sitecustomize monkey-patch; KMAX=8.
 
 ## Result — at saturation, neither adaptive policy reaches AR; DSpark-rule is the *worst* arm
 
@@ -19,7 +19,7 @@ Arms: AR / K4 / K8 (reused from P2 cells) + LDM (local EMA acceptance, measured 
 | LDM | 1432.9 | 1960.1 | −20.2% |
 | DSpark-rule | 1445.4 | **1853.1** | **−24.6%** |
 
-- **C=32 (transition):** all arms within ~1% — SD is roughly neutral here, as P2 predicted. No separation.
+- **C=32 (transition):** all arms within ~1% — SD is roughly neutral here, as Phase 4.2 predicted. No separation.
 - **C=96 (compute-saturated):** AR wins by 20–25%. **DSpark-rule is the worst arm** — it loses even to fixed K8.
   LDM edges out both (best adaptive) but still sits ~20% below AR.
 
@@ -43,7 +43,7 @@ Arms: AR / K4 / K8 (reused from P2 cells) + LDM (local EMA acceptance, measured 
 
 ## Interpretation — this is the finding the LDM idea needs
 
-1. **The load-driven-K premise is real (P2), but DSpark's actual decision rule does not capture it.** A
+1. **The load-driven-K premise is real (Phase 4.2), but DSpark's actual decision rule does not capture it.** A
    batch-coupled objective over a *profiled* SPS(B) curve is not enough to reach the saturated-regime optimum;
    on our hardware/workload it is worse than fixed-K. So "just adopt DSpark" is **not** the answer — this is a
    direct, measured rebuttal to that framing (answering the supervisor's question with evidence).
@@ -53,15 +53,15 @@ Arms: AR / K4 / K8 (reused from P2 cells) + LDM (local EMA acceptance, measured 
    currently consumes. This is precisely the differentiator for our lightweight decision model: per-request
    acceptance × live serving state → K (including off).
 3. **Honest limitation of the current LDM prototype:** it also does not win, because it too is acceptance-only.
-   P5 therefore *motivates* the next step rather than validating the final design: augment LDM with a load-regime
+   Phase 4.5 therefore *motivates* the next step rather than validating the final design: augment LDM with a load-regime
    input so it can commit to SD-off at saturation and large-K when memory-bound. That augmented policy is the
-   actual candidate contribution; P5 shows both existing baselines (fixed-K, DSpark-rule) leave 20–25% on the
+   actual candidate contribution; Phase 4.5 shows both existing baselines (fixed-K, DSpark-rule) leave 20–25% on the
    table at saturation that a load-aware policy should recover.
 
 ## Caveats
 - ngram self-drafting on a repetitive mixed workload: acceptance is high and fairly uniform across requests, so
-  per-request *acceptance* heterogeneity is muted here (it is large on SPEED-Bench, P3). The load-regime effect
+  per-request *acceptance* heterogeneity is muted here (it is large on SPEED-Bench, Phase 4.3). The load-regime effect
   dominates this experiment by design.
-- SPS(B) table has only 13 points (from P2 cells); a denser profile could change DSpark-rule's exact number but
+- SPS(B) table has only 13 points (from Phase 4.2 cells); a denser profile could change DSpark-rule's exact number but
   not the conclusion (its objective structurally over-credits high-K under saturation).
 - Deterministic workload → trial variance is jitter-only; C=96 gaps are all ≥20%, far above noise.
