@@ -147,3 +147,21 @@ In review=`df73e18b` Done=`98236657`. Update via `scripts/set_item_status.sh <it
   verify cost — true for fixed target model); replay approximates batch coupling; single ngram drafter.
 - Full detail: `docs/phase3-results.md`. **Next:** in-loop prototype (set per-request K live via the
   audit's injection points, measure end-to-end throughput vs fixed-K).
+
+### 2026-10-07 (cont.) — Variable-K execution is FEASIBLE with zero vLLM source changes
+Key code-audit finding that unblocks end-to-end measurement: **vLLM already executes variable
+per-request K.** The `SpecDecodeMetadata` builder (gpu_model_runner.py:2586) explicitly handles
+non-uniform draft counts — its docstring shows `num_draft_tokens: [3, 0, 2, 0, 1]` — and FlashAttn
+uses `query_start_loc` (variable query lengths). The ngram proposer is CPU-based. So the worker can
+verify a *different* K per request; the only missing piece is **truncating each request's drafts to
+its LDM-chosen k\***, done in one monkey-patch on `Scheduler.update_draft_token_ids`.
+
+- **`experiments/ldm_controller/sitecustomize.py`** third patch (gated by `VLLM_LDM_ENFORCE=1`):
+  after drafts are stored, truncate `request.spec_token_ids[:k*]`. A k\* set at step t applies at t+1
+  (outputs processed before next-step draft storage) — causal. **Validated live:** server survives
+  variable-K decode on a mixed workload. Variable-K decode is non-uniform → requires `enforce_eager`
+  (CUDA graphs need uniform decode); added an `ENFORCE_EAGER` knob to `run_server.sh`.
+- **`experiments/mixed_workload_client.py`** — sustained Poisson mixed workload (50% templated
+  high-ngram-acceptance + 50% diverse low-acceptance), reports output throughput.
+- **`experiments/ldm_ab.sh`** — end-to-end A/B: LDM(K=8+enforce) vs fixed-K=4 vs fixed-K=8, same
+  workload, eager mode. Running; results → next update.

@@ -14,11 +14,11 @@ The decision is CAUSAL: at step t it uses only accept outcomes observed at steps
 the in-loop counterpart to the offline replay in experiments/ldm_eval.py, now driven
 by live serving dynamics (real arrivals, batching, preemption) rather than a replay.
 
-Note: this prototype LOGS the per-request K decisions and their realized acceptance;
-it does not yet change the worker's draft depth (variable-K execution needs the
-worker buffer/CUDA-graph patch surface in docs/vllm-code-audit.md). The logged
-decisions are exactly what that execution layer would schedule, so their realized
-value is measurable against fixed-K baselines (experiments/analyze_ldm.py).
+Note on execution: with VLLM_LDM_ENFORCE=1 the controller also TRUNCATES each request's
+drafts to its current k* in update_draft_token_ids, so the worker verifies a different K per
+request (vLLM's SpecDecodeMetadata already supports variable per-request draft counts; FlashAttn
+uses variable query lengths). Variable-K decode is non-uniform -> requires enforce_eager (CUDA
+graphs need uniform decode), so end-to-end runs use eager mode for both LDM and fixed-K baselines.
 """
 import json
 import os
@@ -26,6 +26,7 @@ import time
 from collections import defaultdict, deque
 
 OUT = os.environ.get("VLLM_LDM_OUT")
+ENFORCE = os.environ.get("VLLM_LDM_ENFORCE", "0") == "1"
 
 
 def _install():
@@ -47,10 +48,11 @@ def _install():
             return C[k]
         return C[-1] + (k - (len(C) - 1)) * 0.3
 
-    state = defaultdict(lambda: deque(maxlen=W))
+    state = defaultdict(lambda: deque(maxlen=W))   # request_id -> accept history
     _fh = open(OUT, "a", buffering=1)
     _orig_stats = Scheduler.make_spec_decoding_stats
     _orig_out = Scheduler.update_from_output
+    _orig_drafts = Scheduler.update_draft_token_ids
 
     def _decide(hist):
         if not hist:
@@ -73,6 +75,11 @@ def _install():
             kstar = _decide(list(hist))               # uses outcomes incl. this step's
             self._ldm_state = getattr(self, "_ldm_state", {})
             self._ldm_state[request_id] = (num_draft_tokens, kstar, num_accepted_tokens)
+            if ENFORCE:
+                # separate dict consumed by update_draft_token_ids (runs later in post_step),
+                # so it must NOT be cleared by the logging hook.
+                self._ldm_kstar = getattr(self, "_ldm_kstar", {})
+                self._ldm_kstar[request_id] = kstar
         except Exception:
             pass
         return _orig_stats(self, spec_decoding_stats, num_draft_tokens,
@@ -93,9 +100,26 @@ def _install():
             pass
         return res
 
+    def _hooked_drafts(self, draft_token_ids):
+        # After the original stores full drafts per request, truncate each to its k*.
+        res = _orig_drafts(self, draft_token_ids)
+        if ENFORCE:
+            try:
+                ks = getattr(self, "_ldm_kstar", None)
+                for req_id in getattr(draft_token_ids, "req_ids", ()):
+                    kstar = ks.get(req_id, 1) if ks else 1
+                    request = self.requests.get(req_id)
+                    if request is not None and len(request.spec_token_ids) > kstar:
+                        request.spec_token_ids = request.spec_token_ids[:kstar]
+            except Exception:
+                pass
+        return res
+
     Scheduler.make_spec_decoding_stats = _hooked_stats
     Scheduler.update_from_output = _hooked_out
-    print(f"[ldm] in-loop LDM active (KMAX={KMAX} W={W}) -> {OUT}", flush=True)
+    if ENFORCE:
+        Scheduler.update_draft_token_ids = _hooked_drafts
+    print(f"[ldm] in-loop LDM active (KMAX={KMAX} W={W} enforce={ENFORCE}) -> {OUT}", flush=True)
 
 
 _install()

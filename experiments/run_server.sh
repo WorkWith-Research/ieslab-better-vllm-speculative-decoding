@@ -42,6 +42,7 @@ CUDA_VISIBLE_DEVICES=$GPU .venv/bin/vllm serve "$MODEL" \
   --max-num-batched-tokens "$CHUNK_TOKENS" \
   --gpu-memory-utilization "$MEM_UTIL" \
   --enable-prefix-caching \
+  ${ENFORCE_EAGER:+--enforce-eager} \
   "${SPEC_ARGS[@]}" \
   "$@" > "logs/$EXP.server.log" 2>&1 &
 echo $! > "results/$EXP/server.pid"
