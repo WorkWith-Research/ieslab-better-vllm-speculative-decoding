@@ -1,78 +1,83 @@
 #!/usr/bin/env python3
-"""Profile SPS(B) — steps/sec vs total verification batch size B — from P2 metrics.
+"""Profile SPS(B) — decode steps/sec vs total verification batch size B — from P2 data.
 
 DSpark's 'load model' is a static profiled curve SPS(B). We reconstruct the closest
-honest proxy on our hardware: for each P2 cell (K, C), B = C*(1+K) (decode steps in
-steady state verify 1+K tokens per active request), and SPS(B) = decode steps/sec
-measured from the spec-decode token counters (proposed tokens / (1+K) per second).
+honest proxy on our hardware: for each P2 cell (K, C), in steady state each decode step
+verifies 1+K tokens per active request, so B = C*(1+K) and steps/sec = drafts/s
+(cumulative spec_decode_num_drafts counter). AR cells: B=C, SPS = out_tok/s / C.
 
-Usage: .venv/bin/python experiments/profile_sps.py [--base results/p2] [--out results/p2/sps_table.jsonl]
+Uses CUMULATIVE counters (vllm:*[counter]) over the steady window [t>=20s] — NOT sums of
+per-sample deltas (those keys are sparse/zero-padded and unreliable).
+
+Usage: .venv/bin/python experiments/profile_sps.py [--base results/p2] [--out ...]
 """
-import json, os, re, sys
+import json, os, sys
 
 BASE = "results/p2"
 KS = ["none", "1", "2", "4", "8"]
 CS = [8, 32, 96]
 
 
-def parse_client(path):
-    m = None
-    with open(path) as f:
-        for line in f:
-            m = re.search(r"steady_out_tokens=(\d+) steady_throughput_tok_s=([\d.]+)", line)
-    if not m:
+def cell_stats(base, K, C, t):
+    p = f"{base}/p2_k{K}_c{C}_t{t}_mixed_metrics.jsonl"
+    if not os.path.exists(p):
         return None
-    return int(m.group(1)), float(m.group(2))
+    rows = [json.loads(l) for l in open(p)]
+    mr = [r for r in rows if r.get("t", 0) >= 20]
+    if len(mr) < 10:
+        return None
+    a, b = mr[0], mr[-1]
+    dt = max(1e-9, b["t"] - a["t"])
+
+    def c(r, k):
+        return r.get(k, 0) or 0
+
+    gen = (c(b, "vllm:generation_tokens[counter]") - c(a, "vllm:generation_tokens[counter]")) / dt
+    drafts = (c(b, "vllm:spec_decode_num_drafts[counter]") - c(a, "vllm:spec_decode_num_drafts[counter]")) / dt
+    prop = (c(b, "vllm:spec_decode_num_draft_tokens[counter]") - c(a, "vllm:spec_decode_num_draft_tokens[counter]")) / dt
+    acc = (c(b, "vllm:spec_decode_num_accepted_tokens[counter]") - c(a, "vllm:spec_decode_num_accepted_tokens[counter]")) / dt
+    return {"gen": gen, "drafts": drafts, "prop": prop, "acc": acc, "dt": dt}
 
 
 def main():
     base = sys.argv[sys.argv.index("--base") + 1] if "--base" in sys.argv else BASE
     out = sys.argv[sys.argv.index("--out") + 1] if "--out" in sys.argv else os.path.join(base, "sps_table.jsonl")
-    rows = []
+    cells = []
     for K in KS:
         for C in CS:
-            pts = []
-            for t in (1, 2, 3):
-                cl = f"{base}/p2_k{K}_c{C}_t{t}_mixed_client.out"
-                mt_new = f"{base}/p2_k{K}_c{C}_t{t}_mixed_metrics.jsonl"
-                mt_old = f"{base}/C{C}_k{K}_t{t}_metrics.jsonl"
-                mt = mt_new if os.path.exists(mt_new) else mt_old
-                if not (os.path.exists(cl) and os.path.exists(mt)):
-                    continue
-                tok, thr = parse_client(cl)
-                if tok is None:
-                    continue
-                mrows = [json.loads(l) for l in open(mt)]
-                if not mrows or "t" not in mrows[0]:
-                    continue
-                # steady-state window: drop first 20s of samples (warmup ~20s @ 0.5s interval = 40 rows)
-                mr = mrows[40:] if len(mrows) > 80 else mrows
-                t0 = mr[0]["t"]; t1 = mr[-1]["t"]
-                dt = max(1e-9, t1 - t0)
-                k_eff = 0 if K == "none" else int(K)
-                prop = sum(r.get("vllm:spec_decode_num_draft_tokens_proposed_d", 0) or 0 for r in mr)
-                acc = sum(r.get("vllm:spec_decode_num_accepted_tokens_d", 0) or 0 for r in mr)
-                if k_eff == 0:
-                    # AR: steps/sec = output tokens / sec (1 token per step per request batch)
-                    sps = thr / C
-                    B = C
-                else:
-                    steps = prop / (k_eff + 1) if prop else None
-                    if steps is None or steps <= 0:
-                        continue
-                    sps = steps / dt
-                    B = C * (k_eff + 1)
-                pts.append({"B": B, "SPS": round(sps, 2), "tok_s": thr, "acc_rate": round(acc / prop, 3) if prop else None})
-            if pts:
-                rows.append({"K": K, "C": C, "points": pts})
+            pts = [cell_stats(base, K, C, t) for t in (1, 2, 3)]
+            pts = [p for p in pts if p]
+            if not pts:
+                continue
+            n = len(pts)
+            dt = sum(p["dt"] for p in pts)
+            gen = sum(p["gen"] * p["dt"] for p in pts) / dt
+            drafts = sum(p["drafts"] * p["dt"] for p in pts) / dt
+            prop = sum(p["prop"] * p["dt"] for p in pts) / dt
+            acc = sum(p["acc"] * p["dt"] for p in pts) / dt
+            keff = 0 if K == "none" else int(K)
+            if keff == 0:
+                B, sps = C, gen / C
+            else:
+                # Counter identities (exact for vLLM spec decode):
+                #   every decode step emits exactly one bonus token per active request,
+                #   so steps/s S = (gen/s - accepted/s) / C
+                #   verified tokens/step B = C (bonus positions) + proposed/s / S
+                sps = (gen - acc) / C
+                B = C + prop / sps if sps > 0 else None
+            if sps is None or sps <= 0:
+                continue
+            cells.append({"K": K, "C": C, "B": B, "SPS": round(sps, 2),
+                          "tok_s": round(gen, 1), "acc_rate": round(acc / prop, 3) if prop else None,
+                          "per_req_tok_s": round(gen / C, 2)})
     with open(out, "w") as f:
-        for r in rows:
+        for r in cells:
             f.write(json.dumps(r) + "\n")
-    print(f"{'K':>5} {'C':>4} {'B':>6} {'SPS':>8} {'tok/s':>8} {'acc_rate':>9}")
-    for r in rows:
-        for p in r["points"]:
-            print(f"{r['K']:>5} {r['C']:>4} {p['B']:>6} {p['SPS']:>8.2f} {p['tok_s']:>8.1f} {str(p['acc_rate']):>9}")
-    print(f"\nwrote {out} ({len(rows)} cells)")
+    print(f"{'K':>4} {'C':>3} {'B':>5} {'SPS steps/s':>12} {'tok/s':>8} {'acc_rate':>9} {'per-req':>8}")
+    for r in sorted(cells, key=lambda x: (x["B"], x["K"])):
+        print(f"{r['K']:>4} {r['C']:>3} {r['B']:>5} {r['SPS']:>12.2f} {r['tok_s']:>8.1f} "
+              f"{str(r['acc_rate']):>9} {r['per_req_tok_s']:>8.2f}")
+    print(f"\nwrote {out} ({len(cells)} cells)")
 
 
 if __name__ == "__main__":

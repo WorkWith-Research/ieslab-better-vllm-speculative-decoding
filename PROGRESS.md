@@ -343,3 +343,16 @@ mix is identical across arms — the comparison is controlled), but the ±sd rep
 total uncertainty. SPEED-Bench cells (P3) use 1536 distinct prompts → real per-trial variation. If P2 shows a
 near-tie between adjacent K values at any C, that tie is NOT evidence of equivalence — resolve with P3 or a
 seed-varied repeat before drawing conclusions.
+
+### 2026-10-08 — P2 COMPLETE: H-load CONFIRMED (optimal K flips with load)
+45/45 cells done (K∈{none,1,2,4,8} × C∈{8,32,96} × 3 trials, mixed workload, eager).
+- C=8 (memory-bound): **K=8 best (+10.3% vs AR)**, monotone in K — verification tokens nearly free.
+- C=32 (transition): K=8 best by only +1.0% (near noise floor) — SD advantage nearly gone.
+- C=96 (compute-saturated): **AR beats every SD arm by 14–21%**; ranking INVERTED vs C=8.
+Mechanism: acceptance rate load-invariant (0.63–0.85); steps/s falls ~38% (AR→K=8 at C=96) because each step
+verifies B=C(1+K̄) tokens and step time grows with batched tokens in the saturated regime. TPOT 36.8→56.3ms.
+SPS(B) profiled curve reconstructed (45.5 → 16.6 steps/s over B=32→130): results/p2/sps_table.jsonl.
+Largest single effect in the project so far: at C=96, "best fixed-K" loses 21% to oracle-per-load K (=AR).
+Caveats: deterministic workload (variance = jitter only), unexplained TTFT anomaly (SD arms LOWER TTFT than AR
+at C=96 — flagged, not cited), ngram-specific magnitudes, eager mode. Full write-up: docs/phase4-p2-results.md.
+**P3 launched next (supervisor priority): SPEED-Bench throughput_2k (2k-token prefills) K × load matrix.**
