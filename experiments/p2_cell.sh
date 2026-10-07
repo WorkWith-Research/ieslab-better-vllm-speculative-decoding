@@ -4,8 +4,11 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 K="${K:?}"; C="${C:?}"; TRIAL="${TRIAL:?}"
-WORKLOAD="${WORKLOAD:-mixed}"; ISL="${ISL:-2k}"; DIFF="${DIFF:-all}"
+WORKLOAD="${WORKLOAD:-mixed}"; DIFF="${DIFF:-all}"
+ISL=""
+[ "$WORKLOAD" = "speedb" ] && ISL="${ISL:-2k}"
 GPU="${GPU:-0}"; PORT="${PORT:-8100}"; DUR="${DUR:-150}"; WARMUP="${WARMUP:-20}"
+mkdir -p results/p2
 
 tag="p2_k${K}_c${C}_t${TRIAL}_${WORKLOAD}${ISL:+_${ISL}}"
 SPEC_M="none"; [ "$K" != "none" ] && SPEC_M="ngram"
