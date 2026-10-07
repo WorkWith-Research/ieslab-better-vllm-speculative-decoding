@@ -34,8 +34,11 @@ run_trial() {
   done
   [ "$up" = "1" ] || { echo "SERVER FAILED TO START $tag"; return 1; }
 
-  # GPU utilization sampler (5s) during the trial
-  ( for i in $(seq 1 $((DUR/5 + 2))); do nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,noheader >> "/tmp/pa_${tag}_gpu.log"; sleep 5; done ) &
+  # GPU utilization sampler (5s) during the trial — MUST pin --id=$GPU: without it
+  # nvidia-smi reports BOTH GPUs (the idle one reads 0%), halving the mean (bug found
+  # in P1 analysis 2026-10-07; PA grid run #2's gpu_util_mean is an artifact, keep for
+  # reference but do not cite).
+  ( for i in $(seq 1 $((DUR/5 + 2))); do nvidia-smi --id=0 --query-gpu=utilization.gpu,memory.used --format=csv,noheader >> "/tmp/pa_${tag}_gpu.log"; sleep 5; done ) &
   local gpid=$!
 
   .venv/bin/python experiments/latency_client.py 8100 "$DUR" "$CONCURRENCY" "$WARMUP" "/tmp/pa_${tag}.jsonl" 2>&1 | tee "results/$tag/client.out"
