@@ -318,3 +318,19 @@ create real token-budget contention and queue pressure.
 **PENDING (blocked, not yet posted):** Discussion #11 comment with the GPU-util correction + P1 saturation
 table is drafted at scratch (`disc11_comment.md`); the GraphQL post hit an approval timeout and must not be
 retried in the same turn. Post it on the next opportunity (content unchanged).
+
+**Pre-registration — P3: SPEED-Bench throughput_2k (real 2k-token prefills) K × load matrix**
+- **Motivation:** supervisor feedback — requests with diverse prefill/decode sizes. The mixed workload has
+  ISL~50 tok, so prefill never contends with verification for the 2048-token budget. SPEED-Bench throughput_2k
+  (official construction: prompts padded/truncated to 2k tokens, 1536 prompts, 3 difficulty tiers) gives every
+  request a ~2048-token prefill → under load, prefills and SD verification compete for the chunked-prefill budget.
+- **Hypothesis (H-S2/H-S3):** at C_sat with long prefills, large K inflates TTFT disproportionately (verification
+  tokens crowd out prefill chunks within the 2048 budget) while TPOT gains shrink → argmax_K shifts to smaller K
+  or AR relative to the short-workload P2 result. Falsified if the K ranking at C=96 is unchanged by ISL.
+- **Cells:** K ∈ {none,1,2,4,8} × C ∈ {32, 96} × 3 trials = 30 cells (dual-GPU, ~80 min). C=8 omitted: at 2k ISL,
+  C=8 already has substantial prefill work; low-load regime covered by P2. If P2 shows argmax_K SHIFTING with load,
+  add C=16 row (15 cells) to resolve the transition — decision made after P2 analysis, recorded here.
+- **Metrics:** throughput + TTFT/TPOT/E2E percentiles per category and difficulty tier (SPEED-Bench client emits
+  both), plus waiting/KV/GPU from scraper. Official SPEED-Bench metric = output tokens/sec; we report it plus the
+  latency breakdown (theirs doesn't separate prefill/decode effects).
+- **VALID conditions:** same as P2 (achieved concurrency ±15%, steady window ≥60s, K applied per server log).
