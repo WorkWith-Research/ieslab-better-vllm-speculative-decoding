@@ -45,7 +45,7 @@ Current Phase 4 status: **4.1✓ 4.2✓ 4.3✓ 4.5✓; 4.4 pending; 4.6 next.** 
 ## Environment
 
 - 2× RTX 3090 (24 GB), driver 575.57.08 / CUDA 12.9, ~94 GB RAM
-- `.venv`: Python 3.12, vLLM 0.31.0, torch 2.13.0+cu129
+- `.venv`: Python 3.12, vLLM 0.19.1, torch 2.10.0+cu129 (pinned: vLLM ≥0.20 ships CUDA-13 wheels incompatible with driver 575.57.08/CUDA 12.9)
 - Models: `Qwen/Qwen2.5-7B-Instruct` (target), `leptonai/EAGLE-Qwen2.5-7B-Instruct` (draft)
 
 ## Log

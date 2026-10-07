@@ -473,23 +473,18 @@ GPU split: GPU0 K∈{none,1,2}, GPU1 K∈{4,8}. Results → results/p4_4/ (tag p
 **Hypothesis (H-4.6):** a minimal CAUSAL controller combining per-request acceptance with a LIVE load-regime signal can
 (i) use large K when speculation is cheap and (ii) commit to SD-off (K=0) when the batch is compute-saturated — WITHOUT
 being given the concurrency label C.
-**Controller `ldm_load` (smallest rule-based form, all params fixed below BEFORE any run):**
-- Live state: EMA (tau=5s) of per-step batch size B_t (= running decodes + speculative tokens/step) and achieved SPS_t.
-  Profile: SPS_prof(B) from a fresh AR-only sweep over C ∈ {8,16,32,48,64,96,128} (profile_sps.py, steady window),
-  stored results/p4_6/sps_profile.jsonl — a hardware profile of the AR path, NOT live C.
-- **Design correction (pre-run, logged per charter §13 revision #0):** the originally sketched gate
-  R = SPS_achieved/SPS_prof(B) is provably non-discriminative at saturation: Phase 4.2 shows AR@C=96 and K8@C=96 have
-  nearly identical SPS (26.6 vs 16.5… wait — they differ; the ratio would be ~0.62 for K8 but ~1.0 for AR, so R alone
-  cannot tell a controller running AT K8 that it should drop to 0 without already knowing its own action is the cause).
-  The marginal-cost form below removes this circularity: the cost of extending a request's K is evaluated against the
-  PROFILE at the resulting batch size, not against achieved SPS.
-- Decision (per request, each step): k* = argmax_k [ Σ_{l≤k} J_l · ΔSPS_cost(k) ], where J_l = windowed prefix-survival
-  (W=8), and ΔSPS_cost(k) = marginal batch cost of this request holding K=k:
-  ΔSPS_cost(k) = SPS_prof(B̂) − SPS_prof(B̂ + k), B̂ = current EMA batch size, normalized so ΔSPS_cost(0)=1 (AR step).
-  Concretely value v(k) = Σ_{l≤k} J_l · [SPS_prof(B̂)/max(ε, SPS_prof(B̂+k))] — i.e., captured tokens discounted by the
-  relative steps/s loss the batch suffers if this request verifies k extra tokens. k*=0 always in candidates (SD-off).
-  Cold start (EMA not full): v(k) = Σ J_l / c(k) with measured cost vector (Phase 4.5 LDM behavior), k* capped at 4.
-- **No C lookup anywhere in the controller code.** The only load input is measured (B, SPS) history + the static profile.
+**Controller `ldm_load` (rule fixed BEFORE any run):**
+- Live state: B_live = running requests + scheduled speculative tokens this step (measured in update_from_output;
+  NO C anywhere in the controller code). S(B) = EMA (τ=5s) of achieved steps/s at current B.
+- Per-request acceptance: J_r[l] = P(acc ≥ l) over last W=8 observed steps (causal).
+- **Decision rule:** k* = max { k ∈ 0..KMAX(8) : J_r[k] · S(B_live) ≥ T }, T = 1.05 (must beat one AR token by 5%).
+  If none → k*=0 (SD off). Cold start (no history): k*=4.
+- **Pre-run calibration (MANDATORY before launch, output committed):** run `experiments/p46_calibrate.py` on Phase 4.2
+  uniform-K cells to tabulate the rule's implied K* at each (C, measured B, measured SPS, measured J). The rule is
+  LAUNCHED AS-SPECIFIED regardless of calibration outcome; if calibration shows it cannot separate C=32 from C=96,
+  that is recorded and the run proceeds to FALSIFY or SUPPORT accordingly (no post-hoc retuning; ≤1 further revision
+  allowed only if the rule crashes/misfires mechanically, per charter §13).
+**Cells:** ldm_load × C ∈ {8,32,96} × 3 trials = 9 cells
 **Cells:** ldm_load × C ∈ {8,32,96} × 3 trials = 9 cells, mixed workload (Phase 4.2), DUR=150s, eager. Baselines reused:
 AR/K4/K8/LDM/DSpark-rule from Phase 4.2/4.5 (no re-run). GPU1.
 **Success (fixed):** at C=96 ldm_load ≥ AR − noise (noise = max trial spread of AR across trials, ≈0.3%) AND beats DSpark-rule;
