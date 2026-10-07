@@ -314,3 +314,7 @@ create real token-budget contention and queue pressure.
 - **Discriminating vs PA grid:** PA grid was single-load (C=16, capacity-unsaturated). P2 varies the regime.
 - **VALID conditions:** achieved concurrency within ±15% of target (scraper running_p50); steady window ≥60s;
   no OOM beyond expected preemptions at C_sat (recorded per cell); K applied (server log num_speculative_tokens).
+
+**PENDING (blocked, not yet posted):** Discussion #11 comment with the GPU-util correction + P1 saturation
+table is drafted at scratch (`disc11_comment.md`); the GraphQL post hit an approval timeout and must not be
+retried in the same turn. Post it on the next opportunity (content unchanged).
