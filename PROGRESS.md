@@ -477,8 +477,18 @@ being given the concurrency label C.
 - Live state: B_live = running requests + scheduled speculative tokens this step (measured in update_from_output;
   NO C anywhere in the controller code). S(B) = EMA (τ=5s) of achieved steps/s at current B.
 - Per-request acceptance: J_r[l] = P(acc ≥ l) over last W=8 observed steps (causal).
-- **Decision rule:** k* = max { k ∈ 0..KMAX(8) : J_r[k] · S(B_live) ≥ T }, T = 1.05 (must beat one AR token by 5%).
-  If none → k*=0 (SD off). Cold start (no history): k*=4.
+- **Decision rule — REVISION #2 (pre-run, mechanical-flaw fix, charter §13):** the revision-#1 form
+  J_r[k]·S(B_live) ≥ T is mechanically flawed: vLLM verifies all K drafts in ONE forward pass, so the step-rate
+  cost of a request's K depends on the TOTAL batch size B, not per-position (the naive per-position marginal test
+  double-counts cost and was shown offline to return k*=0 even at C=8). Corrected rule, per request r, each step:
+    N = #running requests;  B_live = Σ scheduled tokens this step (both measured in update_from_output);
+    SPS(B) = static profile fitted to Phase-4.2 measured points (AR path for k=0, SD path otherwise);
+    k*_r = argmax_{k∈{0..8}}  N · (1 + Σ_{l≤k} J_r[l]) · SPS(B_live + (k − k_cur)·N),
+  where k_cur is r's K last step and J_r[l] = P(acc≥l) over the request's last W=8 steps (causal; global-prior
+  fallback for cold start, then k*=4 until first observation). No C anywhere in the code — only measured
+  (N, B_live) + the static profile. If all requests have identical J this reduces to the batch-level argmax, so
+  per-request and global decisions coincide on uniform workloads and diverge only via measured acceptance
+  heterogeneity (the LDM differentiator).
 - **Pre-run calibration (MANDATORY before launch, output committed):** run `experiments/p46_calibrate.py` on Phase 4.2
   uniform-K cells to tabulate the rule's implied K* at each (C, measured B, measured SPS, measured J). The rule is
   LAUNCHED AS-SPECIFIED regardless of calibration outcome; if calibration shows it cannot separate C=32 from C=96,
