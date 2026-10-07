@@ -73,12 +73,25 @@ observed acceptance — high-acceptance steps → k\*=4–6, low-acceptance → 
 unit-verified (a request consistently accepting 4/8 drafts → k\*=4). This confirms the LDM's decision
 signal (live per-request acceptance) is available and usable in real time with zero vLLM changes.
 
-**What this prototype does NOT yet do:** change the worker's actual draft depth. Variable-K *execution*
-needs the worker buffer/CUDA-graph patch surface (`docs/vllm-code-audit.md` items 3–4). The logged k\*
-decisions are exactly what that execution layer would schedule, so their realized value is measurable
-against fixed-K once the execution layer lands. (ngram's spiky acceptance — good only where text repeats
-in context — makes the benefit most visible on sustained-repetition workloads or a smoother drafter like
-EAGLE.)
+**What this prototype does:** with `VLLM_LDM_ENFORCE=1`, a third monkey-patch on
+`Scheduler.update_draft_token_ids` truncates each request's stored drafts to its current k\*, so the
+worker verifies a **different K per request**. Feasibility rests on a code-audit finding: vLLM's
+`SpecDecodeMetadata` builder (gpu_model_runner.py:2586) already handles non-uniform per-request draft
+counts (its docstring shows `num_draft_tokens: [3, 0, 2, 0, 1]`) and FlashAttn uses variable query
+lengths — so no worker/CUDA-graph surgery is needed; only the scheduler-side truncation. Variable-K
+decode is non-uniform → requires `enforce_eager` (CUDA graphs need uniform decode).
+
+**Lesson learned (cold-start collapse):** a *pessimistic* cold start (k\*=1 before any observations)
+is **self-fulfilling**: the request only ever drafts 1 token, so the LDM never observes acceptance at
+position ≥2, its estimate stays `J[2..]=0`, and it is stuck at k\*=1 forever — the first end-to-end A/B
+collapsed exactly this way (all 2043 decisions k\*=1; LDM lost to both fixed baselines). The fix is an
+**optimistic cold start** (draft at KMAX until observations exist, then pull K down only when
+genuinely poor); verified the policy then differentiates high→6 / medium→3 / low→1. This is a general
+pitfall for any online per-request controller: the decision must remain *observable* — a policy that
+restricts its own information channel to match its current belief will not converge to the optimum.
+
+**End-to-end A/B** (`experiments/ldm_ab.sh`, sustained concurrent mixed workload, eager mode):
+LDM(K=8+enforce) vs fixed-K=4 vs fixed-K=8 — results in `docs/phase3-results.md` §A/B once the run lands.
 
 ## Reproduce
 ```
