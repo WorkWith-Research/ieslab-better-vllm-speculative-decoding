@@ -125,3 +125,25 @@ In review=`df73e18b` Done=`98236657`. Update via `scripts/set_item_status.sh <it
 - **Phase-3 implication confirmed:** the LDM's decision input (live per-request acceptance →
   natural-K) is measurable in real time with zero vLLM source changes; objective = assign each
   request its natural-K (clipped to [1,Kmax]) under SLO/KV constraints. Full detail: `docs/phase2-results.md`.
+
+### 2026-10-07 (cont.) — Phase 3: causal LDM recovers ~85% of the oracle gap
+- **`experiments/ldm_eval.py`** — first concrete quantification of the LDM idea. Two measured
+  ingredients (no assumed cost model):
+  - **Measured per-step verify-cost c(k)** from Phase-1 (throughput÷accept-len → steps/sec):
+    `c(1)=1.00 … c(8)=3.41` — **sub-linear** (vLLM verifies all K drafts in ~one target fwd pass).
+  - **Causal LDM policy**: replay each request's accept stream; at each step pick k from an online
+    sliding-window estimate of its joint-acceptance profile, maximizing est-captured/c(k). Never sees
+    the full profile — only observed outcomes. All policies scored on one metric (produced tokens /
+    verify-cost) so the oracle is a valid upper bound.
+- **★ Result (ShareGPT per-request, measured c(k)):** best fixed-K value 1.730; **oracle +12.1%**;
+  causal LDM recovers **59% (W=4) → 83% (W=8) → 89% (W=32)** of the oracle gap, i.e. **~10% throughput**
+  from per-request K with a simple online estimator (no perfect knowledge). Residual = estimation error,
+  not policy limitation — converges to oracle as W grows.
+- **Interpretation:** Phase 2 proved requests want different K; Phase 3 proves a *practical* controller
+  captures most of it. This is the honest value number for the LDM idea. The hand-rolled estimator is
+  the skeleton: replace with a learned model ingesting queue/KV/GPU/SLO → generalizes to admission +
+  chunk-size (full LDM objective).
+- **Caveats logged:** c(k) measured on random workload, applied to ShareGPT (assumes workload-invariant
+  verify cost — true for fixed target model); replay approximates batch coupling; single ngram drafter.
+- Full detail: `docs/phase3-results.md`. **Next:** in-loop prototype (set per-request K live via the
+  audit's injection points, measure end-to-end throughput vs fixed-K).
