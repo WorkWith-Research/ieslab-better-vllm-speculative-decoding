@@ -26,6 +26,10 @@ MEM_UTIL="${MEM_UTIL:-0.90}"
 CONTROLLER="${CONTROLLER:-}"
 
 if [ -n "$CONTROLLER" ]; then
+  if [ ! -d "experiments/${CONTROLLER}" ]; then
+    echo "ERROR: controller dir experiments/${CONTROLLER} does not exist (got CONTROLLER=${CONTROLLER})" >&2
+    exit 1
+  fi
   export PYTHONPATH="$(pwd)/experiments/${CONTROLLER}:${PYTHONPATH:-}"
 fi
 
