@@ -27,6 +27,10 @@ if [ "$SPEC_METHOD" != "none" ]; then
     # Controlled acceptance profile (NOTE: vLLM 0.19.1 does not actually apply
     # synthetic with ngram — see PROGRESS.md; kept for future vLLM versions).
     SPEC_ARGS=(--speculative-config "{\"method\": \"$SPEC_METHOD\", \"model\": \"ngram\", \"num_speculative_tokens\": $K, \"rejection_sample_method\": \"synthetic\", \"synthetic_acceptance_rate\": $SYNTH_RATE}")
+  elif [ "$SPEC_METHOD" = "draft_model" ]; then
+    # Model-based speculator: separate draft model (Priority C). Requires DRAFT_MODEL.
+    : "${DRAFT_MODEL:?draft_model method needs DRAFT_MODEL}"
+    SPEC_ARGS=(--speculative-config "{\"method\": \"draft_model\", \"model\": \"$DRAFT_MODEL\", \"num_speculative_tokens\": $K}")
   elif [ "$SPEC_METHOD" = "ngram" ] || [ "$SPEC_METHOD" = "suffix" ]; then
     # Self-drafting methods: no external draft model needed.
     SPEC_ARGS=(--speculative-config "{\"method\": \"$SPEC_METHOD\", \"num_speculative_tokens\": $K}")
