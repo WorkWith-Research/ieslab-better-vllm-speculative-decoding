@@ -232,3 +232,48 @@ A/B v1's independently-measured 773.9 tok/s (K=4, C=16, eager) before re-running
 **Run #1 preserved:** `results/pa_grid_run1_invalid/` + `logs/pa_grid.log` (not overwritten).
 **Re-run:** PA grid run #2 with the fixed client (same pre-registration; results supersede run #1's
 throughput/TPOT only).
+
+### 2026-10-07 (cont.) — PA grid run #2 (fixed client): H1 FALSIFY + supervisor-feedback phase opened
+**Result (C=16, mixed workload, eager, 3 trials each):** AR 735.2±14.8 | K1 730.6±3.2 | K2 762.1±0.0 |
+K4 792.3±1.8 | **K8 802.8±1.8** | LDM 782.4±2.4 tok/s. GPU util ~44% (SD arms) / 48% (AR).
+**Classification: FALSIFY** — LDM < best fixed K=8 by 20.4 tok/s, beyond trial uncertainty (max sd 2.4).
+LDM k* distribution is bimodal (k*=1: ~69%, k*=8: ~31% of decisions) — the W=8 acceptance window pins
+decisions to extremes; lowering K for low-acceptance requests cost batch throughput, it did not help.
+**Key context:** at C=16 the GPU is NOT saturated (44%), so this measures algorithmic policy quality in a
+moderate-load regime only. ngram on this mixed workload: K=1 ≈ AR (speculation net-neutral), gains grow
+monotonically with K up to 8.
+**Headline change:** the Phase-1 claim "optimal K is set by acceptance regime, not load" is DOWNGRADED to a
+working hypothesis — load was never actually varied to saturation in any experiment so far.
+
+**Supervisor feedback (2026-10-07) — now highest priority:** (1) is DSpark compared? (2) is the GPU load
+sufficient? (3) realistic multi-request env? (4) heterogeneous prefill/decode sizes? (5) use ORCA/Sarathi/
+SPEED-Bench workloads. Tracked as issue #10 / project item `PVTI_lADOEyEOMs4Bl95-zg_JZ9c` (In progress).
+Discussion #11 posted with this result + plan.
+
+**Pre-registration — P1: serving saturation characterization (AR baseline, no SD)**
+- **Question:** where does Qwen2.5-7B on 1x RTX 3090 (eager) transition from load-proportional to saturated
+  serving? Which concurrency gives compute/capacity saturation?
+- **Setup:** SPEC_METHOD=none, C ∈ {1,2,4,8,16,32,48,64}, 120s each (C≤8: 90s), warmup 20s, same mixed
+  workload + seed as PA grid. MAX_NUM_SEQS=64. One trial per C (characterization, not hypothesis test).
+- **Measurements:** steady throughput, TTFT/TPOT percentiles, running/waiting queue (scraper), KV-cache
+  util max, GPU util, preemptions, achieved concurrency.
+- **Regime definition (pre-specified):** LOW = throughput ∝ C and TPOT flat; TRANSITION = TPOT or TTFT
+  growing >2× baseline while throughput still rising; SATURATED = throughput flat/declining AND waiting
+  queue >0 sustained (or preemptions >0). Report the boundary concurrencies.
+- **Falsification of "our experiments were unsaturated":** if C=16 already shows TPOT growth >2× vs C=4,
+  then PA grid was in transition regime and K×load effects may have been partly visible — revisit.
+
+**Pre-registration — P2: fixed-K × load matrix (same workload as PA grid)**
+- **Question:** on the SAME mixed workload, does the globally optimal fixed K shift across low / medium /
+  saturated load? (Direct test of DSpark-style load-dependent K motivation.)
+- **Setup:** K ∈ {none(AR),1,2,4,8} × C ∈ {C_low, C_med, C_sat} — concurrencies chosen from P1 results
+  (pre-specified rule: C_low = lowest C with TPOT within 1.2× of C=1; C_med = midpoint of transition;
+  C_sat = first saturated C). 3 trials per cell, eager, mixed workload seed 1234. 5×3×3 = 45 runs (~9h);
+  if P1 shows saturation only at very high C, drop one K level (K=2) to fit time — decision recorded here
+  before execution: prefer dropping K=2 over shortening trials.
+- **Discriminating outcome:** SUPPORT for load-dependence = argmax_K changes between C_low and C_sat AND
+  the gap between best-K at each load vs its worst-K exceeds trial uncertainty. FALSIFY = same K wins at
+  all three loads (within uncertainty) → load is not a material variable for ngram on this workload, and
+  DSpark-style load-driven K has no measured basis here.
+- **VALID conditions:** per-cell achieved concurrency within ±15% of target; no OOM/preemption beyond the
+  saturated cell's expected amount (recorded); steady-state window ≥60s.
