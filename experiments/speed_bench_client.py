@@ -41,6 +41,11 @@ def load_prompts(split_dir, seed=1234):
     return prompts
 
 PROMPTS = load_prompts(SPLIT_DIR)
+# SPEED-Bench methodology: tokenize EXTERNALLY so the engine receives identical
+# pre-tokenized sequences (isolates chat-template/BOS handling across engines).
+from transformers import AutoTokenizer
+TOK = AutoTokenizer.from_pretrained(MODEL, trust_remote_code=True)
+
 lock = threading.Lock()
 idx = [0]
 recs = []
@@ -52,9 +57,11 @@ def stream_one(client, item):
     ttft = None
     ntok = 0
     text_len = 0
+    # token ids (drop BOS if the tokenizer adds one; vLLM completions w/ int prompt does not auto-add)
+    tids = TOK.encode(item["prompt"], add_special_tokens=False)
     try:
         with client.stream("POST", base, json={
-                "model": MODEL, "prompt": item["prompt"],
+                "model": MODEL, "prompt": tids,
                 "max_tokens": MAXTOK, "temperature": 0, "stream": True,
                 "stream_options": {"include_usage": True}}) as r:
             for line in r.iter_lines():
