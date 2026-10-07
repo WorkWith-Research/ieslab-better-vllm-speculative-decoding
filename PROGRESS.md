@@ -277,3 +277,40 @@ Discussion #11 posted with this result + plan.
   DSpark-style load-driven K has no measured basis here.
 - **VALID conditions:** per-cell achieved concurrency within ±15% of target; no OOM/preemption beyond the
   saturated cell's expected amount (recorded); steady-state window ≥60s.
+
+### 2026-10-07 (cont.) — P1 result: NO capacity saturation at C≤64 + GPU-util measurement correction
+**Correction:** PA grid run #2's `gpu_util_mean` (~44%) is an ARTIFACT — the sampler omitted `--id`, so it
+averaged in the idle GPU1. Raw logs show GPU0 at 92–100% kernel occupancy at C=16 (AR 100%, SD arms 92%).
+PA run #2's throughput/latency/K-dist numbers remain valid; only its GPU column is not citable. Sampler fixed.
+**P1 sweep (AR, eager, C=1→64):** throughput perfectly linear in C (51→2621 tok/s; per-request 41–51 tok/s),
+waiting queue = 0 at all C (MAX_NUM_SEQS=64), preemptions 0, KV ≤14%, TPOT stable 20→24ms (+20%), TTFT grows
+linearly (prefill queuing does not hurt decode — chunked-prefill effect). **Conclusion: this workload
+(ISL~50 tok, OSL 256) has no saturated regime up to C=64** — the PA grid ran in a compute-saturated but
+capacity-unsaturated regime. Lesson: nvidia-smi GPU util (100%) ≠ serving saturation; queue depth + achieved
+concurrency are the operative signals.
+**P1b running:** C=96/128 with MAX_NUM_SEQS=128. If still linear, saturation must be induced via longer
+sequences (KV residency) → SPEED-Bench throughput split (1k–32k ISL) becomes the P2 workload — long prefills
+create real token-budget contention and queue pressure.
+
+**Pre-registration — P2: fixed-K × load matrix on a workload that can actually saturate**
+- **Workload decision rule (pre-specified):** if P1b shows no saturation at C≤128 on the short mixed workload,
+  P2 uses **SPEED-Bench throughput_2k** (prompts padded/truncated to 2k ISL — official construction) so KV
+  residency creates real capacity limits; OSL=256. If P1b DOES saturate the short workload, P2 uses it.
+  Recorded here before execution either way.
+- **Cells:** K ∈ {none(AR), 1, 2, 4, 8} × C ∈ {C_low, C_med, C_sat} where (from P1/P1b): C_low = first C with
+  per-request TPS within 10% of the C=1 value (expected ~8–16); C_med = midpoint between C_low and first
+  saturated C; C_sat = first C with waiting_p50 > 0 sustained or throughput sub-linear (<90% of linear
+  extrapolation). If no C_sat exists at MAX_NUM_SEQS=128, use C=128 as the highest-load cell and label it
+  "highest feasible" (not saturated) — recorded deviation.
+- **Trials:** 3 per cell, fresh server, eager mode all arms, mixed-seed fixed (1234), warmup 20s, duration 150s.
+  5 K × 3 C × 3 = 45 runs ≈ 9h → run over ~2 GPU-hours per night; if time-constrained, drop K=2 first
+  (pre-specified, not result-driven).
+- **Hypothesis:** H-load: argmax_K(throughput) changes between C_low and C_sat. Mechanism candidate: at low
+  load each decode step is memory-bound → extra verification tokens are nearly free → large K wins; under
+  saturation the batched-token budget (2048) is contested by prefills + verification, so marginal K tokens
+  displace prefill work and/or lengthen steps → smaller K or even AR wins.
+- **Falsification:** same argmax_K at all three loads within trial uncertainty → load does not move the optimum
+  for ngram on this hardware/workload; DSpark-style load-driven K has no measured basis here (important negative).
+- **Discriminating vs PA grid:** PA grid was single-load (C=16, capacity-unsaturated). P2 varies the regime.
+- **VALID conditions:** achieved concurrency within ±15% of target (scraper running_p50); steady window ≥60s;
+  no OOM beyond expected preemptions at C_sat (recorded per cell); K applied (server log num_speculative_tokens).
