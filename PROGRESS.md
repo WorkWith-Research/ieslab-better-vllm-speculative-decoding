@@ -99,3 +99,29 @@ In review=`df73e18b` Done=`98236657`. Update via `scripts/set_item_status.sh <it
   drafts should sharpen the crossover (deferred — EAGLE-Qwen2 incompatible with vLLM 0.19.1).
 - `analyze.py` now handles both families (`K{K}_r{rate}` random + `S_K{K}_r{rate}` sharegpt) and
   emits a cross-dataset optimum-K-shift comparison. All 32 runs → `results/summary.csv`.
+
+### 2026-10-07 (cont.) — Phase 2: per-request heterogeneity + oracle gap
+- **New tooling (all in `experiments/`):**
+  - `spec_hook/sitecustomize.py` — non-invasive env-gated hook on
+    `Scheduler.make_spec_decoding_stats` (vLLM computes per-request draft/accept at
+    scheduler.py:1370-1390 but aggregates it away). Injected via PYTHONPATH, **no vLLM source
+    modified**; tees `{t,req,K,acc}` per (request, decode-step) when `VLLM_SPEC_HOOK_OUT` set.
+  - `spectrum_client.py` / `sharegpt_client.py` — Poisson clients (real ShareGPT = genuine
+    per-request acceptance diversity). `phase2_mixed.sh` orchestrates server+hook+client.
+  - `oracle_gap.py` — builds per-request joint-acceptance profile J[l], reports natural-K
+    heterogeneity + truncation headroom + cost-model-bracketed oracle gap.
+- **★ Finding 1 — per-request natural-K is highly heterogeneous on real text.** Natural-K
+  (mean accept length) on ShareGPT r6 spans **1.18 → 8.82, CV=0.51** (vs synthetic 0.25): some
+  requests in one batch want K≈1, others K≈8 → a single fixed-K over-speculates the short ones and
+  under-speculates the long ones. This is the concrete problem dynamic-K solves; it must be
+  *measured* per request (can't assume).
+- **Finding 2 — truncation headroom:** at near-optimal fixed K=4, ~20% of the batch's achievable
+  acceptance potential is still truncated from requests that would accept longer chains (cost-model-free floor).
+- **Finding 3 — realizable gap is cost-model-dependent.** vLLM verifies all K drafts in ONE target
+  forward pass (sub-linear cost), so a naive FLOP model (cost∝1+K) is wrong (predicts K=1 always,
+  contradicts Phase-1 measured K=8>K=1). Bracket: linear +0% / sqrt +10.2% / constant +0%.
+  Measured aggregate anchor ShareGPT r6: K=4 1037.9 vs K=8 1043.2 tok/s (+0.5%) — the win is from
+  *per-request assignment*, not a better global K; should grow with load + a real draft model.
+- **Phase-3 implication confirmed:** the LDM's decision input (live per-request acceptance →
+  natural-K) is measurable in real time with zero vLLM source changes; objective = assign each
+  request its natural-K (clipped to [1,Kmax]) under SLO/KV constraints. Full detail: `docs/phase2-results.md`.
