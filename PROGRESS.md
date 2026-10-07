@@ -165,3 +165,37 @@ its LDM-chosen k\***, done in one monkey-patch on `Scheduler.update_draft_token_
   high-ngram-acceptance + 50% diverse low-acceptance), reports output throughput.
 - **`experiments/ldm_ab.sh`** — end-to-end A/B: LDM(K=8+enforce) vs fixed-K=4 vs fixed-K=8, same
   workload, eager mode. Running; results → next update.
+
+### 2026-10-07 (cont.) — A/B v1 result: INCONCLUSIVE + pre-registration of Priority-A grid
+**A/B v1 (single run, concurrent 16, mixed workload, eager):** LDM 785.7 / fixed K4 773.9 /
+fixed K8 793.6 tok/s → **INCONCLUSIVE** (LDM between baselines, no variability estimate). NOT a
+refutation, not a win. Decision-log analysis: k* bimodal {1: 4820, 8: 2159 steps}; high-acceptance
+requests tracked well (k*=7.65), low-acceptance ones lag at k*=3.73 because ngram acceptance is
+spiky (lag-1 autocorrelation ≈ 0) → W=8 window can't predict regime switches. Full analysis:
+`docs/phase3-results.md` §A/B v1; candidate explanations for replay→live ranking disagreement in
+**`docs/replay-vs-live-gap.md`** (E1 batch coupling, E2 cost-model workload mismatch, E3 estimator
+non-stationarity, E4 ragged-eager overhead — each with an isolation experiment).
+
+**Pre-registration — Priority A: rigorous live adaptive-K vs fixed-K grid**
+- **Question:** does adaptive per-request K outperform the best fixed K in live serving?
+- **Hypothesis H1:** adaptive K ≥ best fixed K (replay suggests up to ~+10%; live may be less).
+  **Falsification condition:** adaptive K < best fixed K beyond run-to-run variability, OR
+  best fixed K = AR (speculation net-negative on this workload).
+- **Configs (all eager, same model/workload/concurrency):** `ar` (no SD), `k1`, `k2`, `k4`, `k8`,
+  `ldm` (K=8 server + per-request truncation).
+- **IV:** config. **DV:** output tok/s, request throughput, TTFT mean/p50/p95/p99, TPOT
+  mean/p50/p95/p99, E2E latency percentiles, mean accepted spec length, acceptance rate, chosen-K
+  distribution (ldm), GPU util, preemptions. **Controls:** Qwen2.5-7B-Instruct, ngram drafter,
+  concurrency=16, mixed workload seed 1234, max_tokens=256, 150s window / 20s warmup excluded,
+  same GPU/port/chunking, server restart between configs.
+- **Trials:** 3 per config (fresh server each). Report mean ± std; classify SUPPORT/FALSIFY/
+  INCONCLUSIVE using overlap of trial ranges.
+- **VALID conditions:** all trials complete; steady window fully inside run; no OOM/preemption in
+  logs; ldm truncation effective (decision log present); ar config has zero spec tokens.
+- **INVALID if:** any trial <80% of expected completions, server restart mid-trial, or workload
+  drift (different seed/prompt mix).
+
+**Pre-registration — Priority B isolation E1 (batch coupling):** concurrency sweep C ∈ {1,4,16,32},
+K=2 vs K=8, 2 trials each. **Discriminating outcome:** if K=8's advantage over K=2 grows with C and
+vanishes at C=1 → batch-level verification coupling explains the live-vs-replay ranking flip. At
+C=1 the per-request ranking should match replay's (cross-check of c(k)).

@@ -90,8 +90,45 @@ genuinely poor); verified the policy then differentiates high→6 / medium→3 /
 pitfall for any online per-request controller: the decision must remain *observable* — a policy that
 restricts its own information channel to match its current belief will not converge to the optimum.
 
-**End-to-end A/B** (`experiments/ldm_ab.sh`, sustained concurrent mixed workload, eager mode):
-LDM(K=8+enforce) vs fixed-K=4 vs fixed-K=8 — results in `docs/phase3-results.md` §A/B once the run lands.
+## End-to-end A/B v1 (live) — INCONCLUSIVE (single run); mechanism analysis
+**Setup:** sustained concurrent mixed workload (16 in flight, 50% templated high-ngram-acceptance +
+50% diverse low-acceptance), 150s window, 20s warmup excluded, all eager mode. Single run each.
+
+| config | steady-state tok/s | completions |
+|---|---|---|
+| LDM (K=8 server, per-request truncation) | 785.7 | 469 |
+| fixed K=4 | 773.9 | 459 |
+| fixed K=8 | 793.6 | 472 |
+
+**Classification: INCONCLUSIVE** — LDM lands between the two baselines (−1.0% vs best fixed-K, +1.5%
+vs K=4) with no variability estimate; a single run cannot distinguish "no effect" from "~1% either
+way". This is NOT evidence that adaptive-K helps or hurts end-to-end. **Per the research charter, the
+replay's ~10% (replay-objective) figure must not be reported as an end-to-end throughput result.**
+
+**Validation checks (all passed):** truncation effective (effective draft length distribution matches
+k\* decisions); concurrency correct (469 completions vs 31 in the buggy serial run); warmup excluded;
+server healthy throughout.
+
+**Decision-log analysis (7,261 request-steps) — why LDM ≈ best fixed-K:**
+- k\* is bimodal: {K=1: 4820 steps, K=8: 2159 steps, few in between}. High-acceptance requests
+  (n=77, mean acc 7.2) get mean k\*=7.65 — tracked well. Low-acceptance requests (n=392, mean acc
+  1.53) get mean k\*=**3.73** — the W=8 sliding window lags: ngram acceptance is spiky with
+  **lag-1 autocorrelation ≈ 0** (measured), so a fixed-window estimate cannot predict the next step's
+  regime; the LDM keeps K elevated through low-acceptance stretches.
+- Fixed-K=8 does nearly as well because verification cost is sub-linear in K (c(8)≈3.4×c(1)), so
+  over-speculating on low-acceptance requests is only mildly expensive — which compresses the room
+  adaptive-K can exploit in this workload.
+
+**Candidate explanations for replay→live gap (Priority B, `docs/replay-vs-live-gap.md`):**
+(1) batch-level verification coupling (one forward pass serves the whole batch → over-speculation is
+amortized, under-speculation loses its benefit); (2) cost model c(k) was measured on a high-acceptance
+random workload, not this mixed one; (3) replay assumed stationary per-request J profiles, live ngram
+acceptance is non-stationary/spiky → the online estimator performs worse live than in replay;
+(4) ragged variable-K batch execution overhead in eager mode.
+
+**Next (Priority A):** full grid — AR, fixed K=1/2/4/8, LDM — 3 trials each, all eager, with
+TTFT/TPOT/E2E percentiles + acceptance + chosen-K distribution + GPU util; repeated trials give the
+variability needed to classify. Pre-registered in `PROGRESS.md`.
 
 ## Reproduce
 ```
