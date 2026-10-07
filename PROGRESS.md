@@ -214,3 +214,18 @@ C=1 the per-request ranking should match replay's (cross-check of c(k)).
   drafter-dependent speculation depth.
 - **VALID conditions:** draft model loads (no arch errors); acceptance length >1 on templated
   prompts (sanity: drafting actually works); same concurrency/window/warmup as Priority A.
+
+### 2026-10-07 (cont.) — PA grid run #1 classified INVALID (metric bug) + re-run with fixed client
+**Bug found during validation (charter Step 5):** `latency_client.py` counted **SSE chunks** as
+tokens. vLLM emits one chunk per *decode step*, so speculative configs' token counts were
+undercounted by ~their acceptance length (k1 ×~1.9, k4 ×~3.7, k8 ×~5+), while AR was unaffected
+(1 token/chunk). Consequence: run #1's throughput "AR 756 > k1 655 ≈ k2 660 < k4 666" is **INVALID**
+as a throughput ranking (it measured steps/s, not tokens/s — and made SD look *worse* than AR, the
+opposite of Phase-1's established result). TPOT from run #1 is likewise invalid (divided by chunk
+count). TTFT, GPU util, and chosen-K distributions remain valid.
+**Fix:** client now counts real completion tokens via `stream_options.include_usage` (authoritative
+`usage.completion_tokens` in the final chunk) with a text-length fallback; smoke-verified against
+A/B v1's independently-measured 773.9 tok/s (K=4, C=16, eager) before re-running.
+**Run #1 preserved:** `results/pa_grid_run1_invalid/` + `logs/pa_grid.log` (not overwritten).
+**Re-run:** PA grid run #2 with the fixed client (same pre-registration; results supersede run #1's
+throughput/TPOT only).

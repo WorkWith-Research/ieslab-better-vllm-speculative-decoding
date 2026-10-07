@@ -40,11 +40,14 @@ t0 = [0.0]
 def stream_one(client, prompt):
     ts = time.monotonic()
     ttft = None
-    ntok = 0
+    ntok = 0          # actual completion tokens (from usage in final chunk)
+    nchunks = 0       # SSE chunks carrying text (for diagnostics only)
+    text_len = 0      # fallback token estimate if the stream omits usage
     try:
         with client.stream("POST", base, json={
                 "model": "Qwen/Qwen2.5-7B-Instruct", "prompt": prompt,
-                "max_tokens": MAXTOK, "temperature": 0, "stream": True}) as r:
+                "max_tokens": MAXTOK, "temperature": 0, "stream": True,
+                "stream_options": {"include_usage": True}}) as r:
             for line in r.iter_lines():
                 if not line or not line.startswith("data:"):
                     continue
@@ -59,22 +62,31 @@ def stream_one(client, prompt):
                     if piece:
                         if ttft is None:
                             ttft = time.monotonic() - ts
-                        ntok += 1
+                        nchunks += 1
+                        text_len += len(piece)
+                    u = d.get("usage")
+                    if u and u.get("completion_tokens"):
+                        ntok = u["completion_tokens"]   # authoritative count
                 except Exception:
                     pass
     except Exception as e:
         with lock:
             recs.append({"t": time.monotonic() - t0[0], "err": str(e)[:80]})
         return
+    if ntok == 0 and text_len > 0:
+        # stream omitted usage -> estimate tokens from text length (~4 chars/token)
+        ntok = max(1, round(text_len / 4))
     te = time.monotonic() - ts
     if ttft is None or ntok < 2:
         with lock:
-            recs.append({"t": time.monotonic() - t0[0], "err": "no-tokens", "ntok": ntok})
+            recs.append({"t": time.monotonic() - t0[0], "err": "no-tokens",
+                         "ntok": ntok, "nchunks": nchunks})
         return
     tpot = (te - ttft) / (ntok - 1)
     with lock:
         recs.append({"t": time.monotonic() - t0[0], "ttft_ms": ttft * 1e3,
-                     "tpot_ms": tpot * 1e3, "e2e_s": te, "ntok": ntok})
+                     "tpot_ms": tpot * 1e3, "e2e_s": te, "ntok": ntok,
+                     "nchunks": nchunks})
 
 def worker():
     client = httpx.Client(timeout=900)
