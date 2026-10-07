@@ -8,8 +8,11 @@ GitHub Project: https://github.com/orgs/WorkWith-Research/projects/1 (projectV2 
 |---|---|---|---|
 | `PVTI_lADOEyEOMs4Bl95-zg-9nck` | #1 | Phase 0: Environment setup | Done |
 | `PVTI_lADOEyEOMs4Bl95-zg-9nc4` | #2 | Phase 1: Observation — fixed-K SD under load | Done |
-| `PVTI_lADOEyEOMs4Bl95-zg-9neU` | #3 | Phase 2: Analysis — oracle gap for dynamic K | In progress |
-| `PVTI_lADOEyEOMs4Bl95-zg-9nfY` | #4 | Phase 3: Prototype — lightweight decision model | Backlog |
+| `PVTI_lADOEyEOMs4Bl95-zg-9neU` | #3 | Phase 2: Analysis — oracle gap for dynamic K | Done |
+| `PVTI_lADOEyEOMs4Bl95-zg-9nfY` | #4 | Phase 3: Prototype — per-request dynamic-K controller + live validation | Done |
+| `PVTI_lADOEyEOMs4Bl95-zg_JZ9c` | #10 | Phase 4: Realistic-workload validation — load, SPEED-Bench, heterogeneous ISL/OSL, DSpark | In progress |
+
+**Current Phase-4 checkpoint:** P1 saturation characterization, P2 fixed-K × load, and P3 SPEED-Bench long-prefill validation are complete. P4 heterogeneous ISL × OSL workload and P5 DSpark-rule vs LDM remain.
 
 Status option IDs: Backlog=`f75ad846` Ready=`61e4505c` In progress=`47fc9ee4`
 In review=`df73e18b` Done=`98236657`. Update via `scripts/set_item_status.sh <item-id> <option-id>`.
