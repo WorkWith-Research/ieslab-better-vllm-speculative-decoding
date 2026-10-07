@@ -12,7 +12,7 @@ GitHub Project: https://github.com/orgs/WorkWith-Research/projects/1 (projectV2 
 | `PVTI_lADOEyEOMs4Bl95-zg-9nfY` | #4 | Phase 3: Prototype — per-request dynamic-K controller + live validation | Done |
 | `PVTI_lADOEyEOMs4Bl95-zg_JZ9c` | #10 | Phase 4: Realistic-workload validation — load, SPEED-Bench, heterogeneous ISL/OSL, DSpark | In progress |
 
-**Current Phase-4 checkpoint:** P1 saturation characterization, P2 fixed-K × load, and P3 SPEED-Bench long-prefill validation are complete. P4 heterogeneous ISL × OSL workload and P5 DSpark-rule vs LDM remain.
+**Current Phase-4 checkpoint:** Phase 4.1 saturation characterization, Phase 4.2 fixed-K × load, and Phase 4.3 SPEED-Bench long-prefill validation are complete. Phase 4.4 heterogeneous ISL × OSL workload and Phase 4.5 DSpark-rule vs LDM remain.
 
 Status option IDs: Backlog=`f75ad846` Ready=`61e4505c` In progress=`47fc9ee4`
 In review=`df73e18b` Done=`98236657`. Update via `scripts/set_item_status.sh <item-id> <option-id>`.
@@ -253,7 +253,7 @@ sufficient? (3) realistic multi-request env? (4) heterogeneous prefill/decode si
 SPEED-Bench workloads. Tracked as issue #10 / project item `PVTI_lADOEyEOMs4Bl95-zg_JZ9c` (In progress).
 Discussion #11 posted with this result + plan.
 
-**Pre-registration — P1: serving saturation characterization (AR baseline, no SD)**
+**Pre-registration — Phase 4.1: serving saturation characterization (AR baseline, no SD)**
 - **Question:** where does Qwen2.5-7B on 1x RTX 3090 (eager) transition from load-proportional to saturated
   serving? Which concurrency gives compute/capacity saturation?
 - **Setup:** SPEC_METHOD=none, C ∈ {1,2,4,8,16,32,48,64}, 120s each (C≤8: 90s), warmup 20s, same mixed
@@ -266,7 +266,7 @@ Discussion #11 posted with this result + plan.
 - **Falsification of "our experiments were unsaturated":** if C=16 already shows TPOT growth >2× vs C=4,
   then PA grid was in transition regime and K×load effects may have been partly visible — revisit.
 
-**Pre-registration — P2: fixed-K × load matrix (same workload as PA grid)**
+**Pre-registration — Phase 4.2: fixed-K × load matrix (same workload as PA grid)**
 - **Question:** on the SAME mixed workload, does the globally optimal fixed K shift across low / medium /
   saturated load? (Direct test of DSpark-style load-dependent K motivation.)
 - **Setup:** K ∈ {none(AR),1,2,4,8} × C ∈ {C_low, C_med, C_sat} — concurrencies chosen from P1 results
@@ -281,26 +281,26 @@ Discussion #11 posted with this result + plan.
 - **VALID conditions:** per-cell achieved concurrency within ±15% of target; no OOM/preemption beyond the
   saturated cell's expected amount (recorded); steady-state window ≥60s.
 
-### 2026-10-07 (cont.) — P1 result: NO capacity saturation at C≤64 + GPU-util measurement correction
+### 2026-10-07 (cont.) — Phase 4.1 result: NO capacity saturation at C≤64 + GPU-util measurement correction
 **Correction:** PA grid run #2's `gpu_util_mean` (~44%) is an ARTIFACT — the sampler omitted `--id`, so it
 averaged in the idle GPU1. Raw logs show GPU0 at 92–100% kernel occupancy at C=16 (AR 100%, SD arms 92%).
 PA run #2's throughput/latency/K-dist numbers remain valid; only its GPU column is not citable. Sampler fixed.
-**P1 sweep (AR, eager, C=1→64):** throughput perfectly linear in C (51→2621 tok/s; per-request 41–51 tok/s),
+**Phase 4.1 sweep (AR, eager, C=1→64):** throughput perfectly linear in C (51→2621 tok/s; per-request 41–51 tok/s),
 waiting queue = 0 at all C (MAX_NUM_SEQS=64), preemptions 0, KV ≤14%, TPOT stable 20→24ms (+20%), TTFT grows
 linearly (prefill queuing does not hurt decode — chunked-prefill effect). **Conclusion: this workload
 (ISL~50 tok, OSL 256) has no saturated regime up to C=64** — the PA grid ran in a compute-saturated but
 capacity-unsaturated regime. Lesson: nvidia-smi GPU util (100%) ≠ serving saturation; queue depth + achieved
 concurrency are the operative signals.
-**P1b running:** C=96/128 with MAX_NUM_SEQS=128. If still linear, saturation must be induced via longer
-sequences (KV residency) → SPEED-Bench throughput split (1k–32k ISL) becomes the P2 workload — long prefills
+**Phase 4.1b extension running:** C=96/128 with MAX_NUM_SEQS=128. If still linear, saturation must be induced via longer
+sequences (KV residency) → SPEED-Bench throughput split (1k–32k ISL) becomes the Phase 4.2 workload — long prefills
 create real token-budget contention and queue pressure.
 
-**Pre-registration — P2: fixed-K × load matrix on a workload that can actually saturate**
+**Pre-registration — Phase 4.2: fixed-K × load matrix on a workload that can actually saturate**
 - **Workload decision rule (pre-specified):** if P1b shows no saturation at C≤128 on the short mixed workload,
-  P2 uses **SPEED-Bench throughput_2k** (prompts padded/truncated to 2k ISL — official construction) so KV
-  residency creates real capacity limits; OSL=256. If P1b DOES saturate the short workload, P2 uses it.
+  Phase 4.2 uses **SPEED-Bench throughput_2k** (prompts padded/truncated to 2k ISL — official construction) so KV
+  residency creates real capacity limits; OSL=256. If P1b DOES saturate the short workload, Phase 4.2 uses it.
   Recorded here before execution either way.
-- **Cells:** K ∈ {none(AR), 1, 2, 4, 8} × C ∈ {C_low, C_med, C_sat} where (from P1/P1b): C_low = first C with
+- **Cells:** K ∈ {none(AR), 1, 2, 4, 8} × C ∈ {C_low, C_med, C_sat} where (from Phase 4.1/4.1b): C_low = first C with
   per-request TPS within 10% of the C=1 value (expected ~8–16); C_med = midpoint between C_low and first
   saturated C; C_sat = first C with waiting_p50 > 0 sustained or throughput sub-linear (<90% of linear
   extrapolation). If no C_sat exists at MAX_NUM_SEQS=128, use C=128 as the highest-load cell and label it
@@ -314,7 +314,7 @@ create real token-budget contention and queue pressure.
   displace prefill work and/or lengthen steps → smaller K or even AR wins.
 - **Falsification:** same argmax_K at all three loads within trial uncertainty → load does not move the optimum
   for ngram on this hardware/workload; DSpark-style load-driven K has no measured basis here (important negative).
-- **Discriminating vs PA grid:** PA grid was single-load (C=16, capacity-unsaturated). P2 varies the regime.
+- **Discriminating vs PA grid:** PA grid was single-load (C=16, capacity-unsaturated). Phase 4.2 varies the regime.
 - **VALID conditions:** achieved concurrency within ±15% of target (scraper running_p50); steady window ≥60s;
   no OOM beyond expected preemptions at C_sat (recorded per cell); K applied (server log num_speculative_tokens).
 
@@ -322,7 +322,7 @@ create real token-budget contention and queue pressure.
 table is drafted at scratch (`disc11_comment.md`); the GraphQL post hit an approval timeout and must not be
 retried in the same turn. Post it on the next opportunity (content unchanged).
 
-**Pre-registration — P3: SPEED-Bench throughput_2k (real 2k-token prefills) K × load matrix**
+**Pre-registration — Phase 4.3: SPEED-Bench throughput_2k (real 2k-token prefills) K × load matrix**
 - **Motivation:** supervisor feedback — requests with diverse prefill/decode sizes. The mixed workload has
   ISL~50 tok, so prefill never contends with verification for the 2048-token budget. SPEED-Bench throughput_2k
   (official construction: prompts padded/truncated to 2k tokens, 1536 prompts, 3 difficulty tiers) gives every
@@ -338,16 +338,16 @@ retried in the same turn. Post it on the next opportunity (content unchanged).
   latency breakdown (theirs doesn't separate prefill/decode effects).
 - **VALID conditions:** same as P2 (achieved concurrency ±15%, steady window ≥60s, K applied per server log).
 
-**P2 caveat (recorded during run):** the mixed workload is fully deterministic (fixed seed 1234 + greedy
+**Phase 4.2 caveat (recorded during run):** the mixed workload is fully deterministic (fixed seed 1234 + greedy
 decoding), so identical trials produce nearly identical token counts (verified: K=none C=8 trials t1/t2/t3 all
 51200 steady tokens, 393.8 tok/s; raw per-request timestamps differ). Trial variance therefore measures
 scheduling/queueing jitter only, not workload sampling noise. This is acceptable for ranking K (the workload
 mix is identical across arms — the comparison is controlled), but the ±sd reported by analyze_p2.py understates
-total uncertainty. SPEED-Bench cells (P3) use 1536 distinct prompts → real per-trial variation. If P2 shows a
+total uncertainty. SPEED-Bench cells (Phase 4.3) use 1536 distinct prompts → real per-trial variation. If P2 shows a
 near-tie between adjacent K values at any C, that tie is NOT evidence of equivalence — resolve with P3 or a
 seed-varied repeat before drawing conclusions.
 
-### 2026-10-08 — P2 grid COMPLETE (45/45) + H-load verdict: **SUPPORT**
+### 2026-10-08 — Phase 4.2 grid COMPLETE (45/45) + H-load verdict: **SUPPORT**
 **Result (`docs/p2-load-matrix-results.md`, pivot in `results/p2/summary.csv`):** argmax_K flips with load.
 
 | C | argmax_K | best tok/s | SD(K=8) vs AR |
@@ -363,16 +363,16 @@ seed-varied repeat before drawing conclusions.
 - **Recorded deviation:** C=96 shows waiting_max=0, KV ≤21%, no preemptions → it is the *highest feasible*
   load on this short-ISL workload, i.e. **compute/occupancy**-saturated, NOT capacity-saturated (no sustained
   queue). The flip is a compute-occupancy phenomenon; behavior under true capacity saturation (long prefills)
-  is the P3 question (SPEED-Bench throughput_2k, already pre-registered above).
+  is the Phase 4.3 question (SPEED-Bench throughput_2k, already pre-registered above).
 - **Validity all met:** achieved concurrency within ±15% (running_p50 = 8/32/96 exact); K applied per server
   log (`num_speculative_tokens` none/1/2/4/8 verified); no OOM/preemption; steady window ≥60s.
 - **Caveat:** deterministic workload → sd understates total uncertainty (jitter only). C=96 K=4 sd=30.8 is one
   outlier trial (1927.9/1904.2/1965.3); ranking unaffected.
 
-**Next (per pre-registration, not auto-launched):** P3 = SPEED-Bench throughput_2k K×C matrix to test whether the
+**Next (per pre-registration, not auto-launched):** Phase 4.3 = SPEED-Bench throughput_2k K×C matrix to test whether the
 argmax flip persists/strengthens under long-prefill capacity saturation. Awaiting explicit go-ahead before launch.
 
-### 2026-10-08 — P2 COMPLETE: H-load CONFIRMED (optimal K flips with load)
+### 2026-10-08 — Phase 4.2 COMPLETE: H-load CONFIRMED (optimal K flips with load)
 45/45 cells done (K∈{none,1,2,4,8} × C∈{8,32,96} × 3 trials, mixed workload, eager).
 - C=8 (memory-bound): **K=8 best (+10.3% vs AR)**, monotone in K — verification tokens nearly free.
 - C=32 (transition): K=8 best by only +1.0% (near noise floor) — SD advantage nearly gone.
@@ -383,21 +383,21 @@ SPS(B) profiled curve reconstructed (45.5 → 16.6 steps/s over B=32→130): res
 Largest single effect in the project so far: at C=96, "best fixed-K" loses 21% to oracle-per-load K (=AR).
 Caveats: deterministic workload (variance = jitter only), unexplained TTFT anomaly (SD arms LOWER TTFT than AR
 at C=96 — flagged, not cited), ngram-specific magnitudes, eager mode. Full write-up: docs/phase4-p2-results.md.
-**P3 launched next (supervisor priority): SPEED-Bench throughput_2k (2k-token prefills) K × load matrix.**
+**Phase 4.3 launched next (supervisor priority): SPEED-Bench throughput_2k (2k-token prefills) K × load matrix.**
 
-**Pre-registration — P5: DSpark-rule baseline vs LDM vs fixed-K (in-loop, same workload/load as P2/P3)**
+**Pre-registration — Phase 4.5: DSpark-rule baseline vs LDM vs fixed-K (in-loop, same workload/load as Phase 4.2/4.3)**
 - **Arms:** AR (K=0 all), fixed K=4, fixed K=8, **LDM** (acceptance-only, local EMA window W=8, measured
   cost curve c(k)), **DSpark-rule** (batch-level global greedy over empirical prefix-survival J_r[j] with the
   hardware-profiled SPS(B) table from P2; objective Θ=τ·SPS(B)). All in-loop via sitecustomize monkey-patch
   (run_server.sh CONTROLLER=ldm|dspark), eager mode, KMAX=8.
 - **Faithfulness notes (documented deviations):** DSpark uses a trained confidence head (ECE~1%) — we use
   empirical per-position acceptance over the last W steps (causal). DSpark's SPS(B) is profiled offline — ours
-  too (P2 table), same spirit. DSpark's production system has no "SD off" outcome; P2 showed AR wins at C=96, so
+  too (Phase 4.2 table), same spirit. DSpark's production system has no "SD off" outcome; P2 showed AR wins at C=96, so
   we EXTEND both policies with an explicit all-K=0 fallback: after the greedy/EMA decision, if Θ(K=0 for all)
   ≥ Θ(chosen allocation), take K=0 (recorded as a deviation, pre-specified). This is what makes "SD off"
   reachable and is exactly the regime P2 says matters.
 - **Cells:** C ∈ {32, 96} × arm ∈ {AR, K4, K8, LDM, DSpark-rule} × 3 trials = 30 cells, dual-GPU, mixed workload
-  (P2 workload) first; if time permits repeat on SPEED-Bench 2k (P3 workload). AR/K4/K8 at these C already exist
+  (Phase 4.2 workload) first; if time permits repeat on SPEED-Bench 2k (Phase 4.3 workload). AR/K4/K8 at these C already exist
   from P2 — reuse those numbers, run only LDM + DSpark-rule (12 new cells ≈ 90 min dual-GPU).
 - **Hypothesis:** H-D: DSpark-rule ≥ best fixed-K at C=32 (its SPS(B) term should down-weight K as B grows), and
   DSpark-rule < AR-oracle gap-closer at C=96 because per-request confidence keeps some requests at high K even
@@ -410,7 +410,7 @@ at C=96 — flagged, not cited), ngram-specific magnitudes, eager mode. Full wri
 - **VALID conditions:** controller active line in server log ([dspark]/[ldm] banner); decision JSONL non-empty;
   achieved concurrency within ±15% of target; K distribution from decision logs reported (not just throughput).
 
-### 2026-10-08 — P3 COMPLETE: SPEED-Bench 2k (long prefills) reveals a SECOND load axis + per-request structure
+### 2026-10-08 — Phase 4.3 COMPLETE: SPEED-Bench 2k (long prefills) reveals a SECOND load axis + per-request structure
 30/30 cells (K∈{none,1,2,4,8} × C∈{32,96} × 3 trials, SPEED-Bench throughput_2k, ISL p50=1986/max 3980, pre-tokenized).
 - **C=32 (moderate load, heavy prefill stream): AR wins by up to +13% over K=8.** ~2k prefills arriving continuously →
   SD verification tokens crowd out prefill chunks in the 2048 budget → prefills finish slower → fewer reach decode.
@@ -421,4 +421,4 @@ at C=96 — flagged, not cited), ngram-specific magnitudes, eager mode. Full wri
   high_entropy TPOT by +32–60% (117 vs 88ms). Aggregate hides it; a uniform-K policy is wrong for ≥half the traffic.
 - **Two load axes:** C (P2) and ISL (P3) independently move argmax_K → a single "GPU load" scalar (DSpark's SPS(B))
   is insufficient; need both concurrency AND prefill-intensity signals. Full write-up: docs/phase4-p3-results.md.
-**Next: P5 — DSpark-rule vs LDM in-loop (directly answers supervisor's "are you using DSpark?").**
+**Next: Phase 4.5 — DSpark-rule vs LDM in-loop (directly answers supervisor's "are you using DSpark?").**
