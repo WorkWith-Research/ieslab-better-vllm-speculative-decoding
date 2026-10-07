@@ -474,12 +474,21 @@ GPU split: GPU0 K∈{none,1,2}, GPU1 K∈{4,8}. Results → results/p4_4/ (tag p
 (i) use large K when speculation is cheap and (ii) commit to SD-off (K=0) when the batch is compute-saturated — WITHOUT
 being given the concurrency label C.
 **Controller `ldm_load` (smallest rule-based form, all params fixed below BEFORE any run):**
-- Live state: rolling window (N=30 steps) of per-step batch size B_t (= running decodes + speculative tokens/step) and
-  achieved SPS_t = steps/s. Regime ratio R = SPS_achieved / SPS_profiled(B), where SPS_profiled is the Phase 4.2 AR curve
-  (results/p2/sps_table.jsonl, B∈[32,96]) — a hardware profile, not live C.
-- Decision (per request, each step): value v(k) = Σ_{l≤k} J_l / c(k) × g(R), where J_l = request's windowed prefix-survival
-  (W=8) and c(k) is the measured cost vector (same as Phase 4.5 LDM); regime gate g(R): R≥0.85 → k*=argmax v (allow KMAX=8);
-  0.60≤R<0.85 → k* ≤ 2; R<0.60 → k*=0 (SD off). Cold start (window not full): k*=4.
+- Live state: EMA (tau=5s) of per-step batch size B_t (= running decodes + speculative tokens/step) and achieved SPS_t.
+  Profile: SPS_prof(B) from a fresh AR-only sweep over C ∈ {8,16,32,48,64,96,128} (profile_sps.py, steady window),
+  stored results/p4_6/sps_profile.jsonl — a hardware profile of the AR path, NOT live C.
+- **Design correction (pre-run, logged per charter §13 revision #0):** the originally sketched gate
+  R = SPS_achieved/SPS_prof(B) is provably non-discriminative at saturation: Phase 4.2 shows AR@C=96 and K8@C=96 have
+  nearly identical SPS (26.6 vs 16.5… wait — they differ; the ratio would be ~0.62 for K8 but ~1.0 for AR, so R alone
+  cannot tell a controller running AT K8 that it should drop to 0 without already knowing its own action is the cause).
+  The marginal-cost form below removes this circularity: the cost of extending a request's K is evaluated against the
+  PROFILE at the resulting batch size, not against achieved SPS.
+- Decision (per request, each step): k* = argmax_k [ Σ_{l≤k} J_l · ΔSPS_cost(k) ], where J_l = windowed prefix-survival
+  (W=8), and ΔSPS_cost(k) = marginal batch cost of this request holding K=k:
+  ΔSPS_cost(k) = SPS_prof(B̂) − SPS_prof(B̂ + k), B̂ = current EMA batch size, normalized so ΔSPS_cost(0)=1 (AR step).
+  Concretely value v(k) = Σ_{l≤k} J_l · [SPS_prof(B̂)/max(ε, SPS_prof(B̂+k))] — i.e., captured tokens discounted by the
+  relative steps/s loss the batch suffers if this request verifies k extra tokens. k*=0 always in candidates (SD-off).
+  Cold start (EMA not full): v(k) = Σ J_l / c(k) with measured cost vector (Phase 4.5 LDM behavior), k* capped at 4.
 - **No C lookup anywhere in the controller code.** The only load input is measured (B, SPS) history + the static profile.
 **Cells:** ldm_load × C ∈ {8,32,96} × 3 trials = 9 cells, mixed workload (Phase 4.2), DUR=150s, eager. Baselines reused:
 AR/K4/K8/LDM/DSpark-rule from Phase 4.2/4.5 (no re-run). GPU1.
