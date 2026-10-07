@@ -494,7 +494,31 @@ being given the concurrency label C.
   LAUNCHED AS-SPECIFIED regardless of calibration outcome; if calibration shows it cannot separate C=32 from C=96,
   that is recorded and the run proceeds to FALSIFY or SUPPORT accordingly (no post-hoc retuning; ≤1 further revision
   allowed only if the rule crashes/misfires mechanically, per charter §13).
+**Revision #3 (pre-run, mechanical-flaw fix #2):** revision #2's value model used a uniform-batch delta
+`(k-k_cur)*N` and an `a_bar` computed over ALL pending requests. Two flaws found during smoke testing:
+(1) ngram self-drafting produces far fewer ACTUAL drafts than the instructed K on most steps (measured
+mean d≈2.6/req at C=8), so the batch-size delta must use measured per-request draft count d_r, not k-k_cur;
+(2) `a_bar` (batch mean accepted/request-step) included zero-draft requests and omitted the +1 bonus token
+each drafted request emits every step — this drove a self-fulfilling K=0 collapse in the C=8 smoke test
+(meanK 0.52 where fixed-K8 wins +10.3%). Corrected rule (rev #3): k*_r = argmax_k [(N-1)(1+a_bar) + 1 +
+Σ_{l≤k}J_r[l]] · SPS_path(B_live + (k - d_r)), a_bar over DRAFTED requests only incl. the bonus token.
+**INVALID cells:** 4 ldmload cells run under rev #2 (c8 t0/t1/t2, c32 t0) are quarantined in
+results/p4_6/invalid_rev2/ and must not be reused. The SPS profile is extended with SD K=4/8 at C=96
+(B≈110-130) so the cost model covers the saturation regime (initial profile only reached B≈86).
+
 **Cells:** ldm_load × C ∈ {8,32,96} × 3 trials = 9 cells
+**Revision #3 (pre-run, mechanical-flaw fix #2):** revision #2's value model used a uniform-batch delta
+`(k-k_cur)*N` and an `a_bar` computed over ALL pending requests. Two flaws found during smoke testing:
+(1) ngram self-drafting produces far fewer ACTUAL drafts than the instructed K on most steps (measured
+mean d≈2.6/req at C=8), so the batch-size delta must use measured per-request draft count d_r, not k-k_cur;
+(2) `a_bar` (batch mean accepted/request-step) included zero-draft requests and omitted the +1 bonus token
+each drafted request emits every step — this drove a self-fulfilling K=0 collapse in the C=8 smoke test
+(meanK 0.52 where fixed-K8 wins +10.3%). Corrected rule (rev #3): k*_r = argmax_k [(N-1)(1+a_bar) + 1 +
+Σ_{l≤k}J_r[l]] · SPS_path(B_live + (k - d_r)), a_bar over DRAFTED requests only incl. the bonus token.
+**INVALID cells:** 4 ldmload cells run under rev #2 (c8 t0/t1/t2, c32 t0) are quarantined in
+results/p4_6/invalid_rev2/ and must not be reused. The SPS profile is extended with SD K=4/8 at C=96
+(B≈110-130) so the cost model covers the saturation regime (initial profile only reached B≈86).
+
 **Cells:** ldm_load × C ∈ {8,32,96} × 3 trials = 9 cells, mixed workload (Phase 4.2), DUR=150s, eager. Baselines reused:
 AR/K4/K8/LDM/DSpark-rule from Phase 4.2/4.5 (no re-run). GPU1.
 **Success (fixed):** at C=96 ldm_load ≥ AR − noise (noise = max trial spread of AR across trials, ≈0.3%) AND beats DSpark-rule;

@@ -1,12 +1,17 @@
 """In-loop LIVE-LOAD-AWARE LDM (Phase 4.6, pre-registered in PROGRESS.md — Priority B).
 
-Decision rule (revision #2, fixed before any run): per request r, each decode step:
+Decision rule (revision #3, fixed before any run; supersedes revision #2's uniform-batch delta):
+per request r, each decode step:
     N        = number of running requests this step          (measured)
     B_live   = total scheduled tokens this step              (measured; includes drafts + prefills)
-    k*_r     = argmax_{k in 0..KMAX}  N * (1 + sum_{l<=k} J_r[l]) * SPS_path(B_live + (k - k_cur)*N)
-where J_r[l] = P(acc >= l) over r's last W observed steps (causal), k_cur = r's K last step,
-and SPS_path is the static profile fitted to Phase-4.6 measured points (AR path for k=0, SD
-path for k>0). NO concurrency label C appears anywhere — only measured (N, B_live) + profile.
+    d_r      = actual draft tokens scheduled for r this step (measured; ngram often < K)
+    a_bar    = EMA of batch mean accepted tokens / request-step (measured from per-request stats)
+    k*_r     = argmax_{k in 0..KMAX}  [(N-1)*(1+a_bar) + 1 + sum_{l<=k} J_r[l]] * SPS_path(B_live + (k - d_r))
+where J_r[l] = P(acc >= l) over r's last W observed steps (causal), and SPS_path is the static
+profile fitted to Phase-4.6 measured points (AR path for k=0, SD path for k>0). The delta uses
+d_r (ACTUAL scheduled drafts, not the instructed K) because ngram self-drafting produces far fewer
+drafts than K on most steps — revision #2's (k-k_cur)*N term was mechanically wrong for that reason.
+NO concurrency label C appears anywhere — only measured (N, B_live, d_r, a_bar) + profile.
 
 Mechanics: server runs with SPEC_METHOD=ngram K=KMAX; this controller truncates each request's
 drafts to its k* in update_draft_token_ids (same enforcement as the Phase 4.5 LDM controller).
@@ -79,8 +84,10 @@ def _install():
         print(f"[ldmload] WARNING: profile incomplete (ar={bool(AR_P)} sd={bool(SD_P)}) — "
               f"controller will run AR-only-ish", flush=True)
 
-    state = defaultdict(lambda: deque(maxlen=W))   # req -> accepted-token history
-    k_cur = {}                                      # req -> K last step
+    state = defaultdict(lambda: deque(maxlen=W))   # req -> accepted-token history (DRAFTED steps only)
+    d_live = {}                                     # req -> actual scheduled draft tokens this step
+    a_bar = [0.0]                                   # type: ignore[list-item]  EMA of mean acc/req-step over DRAFTED requests
+    A_TAU = 0.95                                    # EMA decay (per step)
     global_J = [1.0] * (KMAX + 1)                   # cold-start prior
     n_obs = [0]
     _fh = open(OUT, "a", buffering=1)
@@ -95,15 +102,16 @@ def _install():
                 J[l] = global_J[l]
         return J
 
-    def _decide(J, N, B_live, kc):
-        # k* = argmax_k N*(1+sum_{l<=k}J[l])*SPS_path(B_live + (k-kc)*N)
+    def _decide(J, N, B_live, d_r, a_bar_v):
+        # k* = argmax_k [(N-1)*(1+a_bar) + 1 + sum_{l<=k}J[l]] * SPS_path(B_live + (k - d_r))
         best, bv = 0, -1.0
+        others = (N - 1) * (1.0 + a_bar_v) if N > 1 else 0.0
         for k in range(0, KMAX + 1):
             E = sum(J[1:k + 1])
-            B = max(1.0, B_live + (k - kc) * N)
+            B = max(1.0, B_live + (k - d_r))
             p = AR_P if k == 0 else SD_P
             s = _sps(p, B) if p else 30.0
-            v = N * (1.0 + E) * s
+            v = (others + 1.0 + E) * s
             if v > bv:
                 bv, best = v, k
         return best
@@ -120,6 +128,7 @@ def _install():
             n_obs[0] += 1
             for l in range(1, KMAX + 1):
                 global_J[l] = ((n_obs[0] - 1) * global_J[l] + (1 if num_accepted_tokens >= l else 0)) / n_obs[0]
+            d_live[request_id] = int(num_draft_tokens or 0)   # ACTUAL scheduled drafts this step
             self._ll_pending = getattr(self, "_ll_pending", {})
             self._ll_pending[request_id] = (num_draft_tokens,)
         except Exception:
@@ -135,21 +144,29 @@ def _install():
                 N = len(self.running) or len(pend)
                 B_live = float(getattr(scheduler_output, "total_num_scheduled_tokens", 0)) \
                     or sum(len(v) for v in getattr(scheduler_output, "scheduled_spec_decode_tokens", {}).values()) + N
+                # batch mean accepted/request-step (measured) over DRAFTED requests only,
+                # INCLUDING the +1 bonus token each drafted request emits every step:
+                #   a_bar = (sum acc + n_drafted) / n_drafted
+                # (Zero-draft steps never reach make_spec_decoding_stats, so they cannot poison this.)
+                drafted = [r for r in pend if d_live.get(r, 0) > 0]
+                if drafted:
+                    step_acc = (sum(state[r][-1] for r in drafted) + len(drafted)) / len(drafted)
+                    a_bar[0] = step_acc if a_bar[0] == 0.0 else A_TAU * a_bar[0] + (1 - A_TAU) * step_acc
                 knew = {}
                 decs = []
                 for r in pend:
-                    kc = k_cur.get(r, KMAX)
+                    d_r = d_live.get(r, 0)
                     hist = state.get(r)
                     if not hist:
                         ks = 4   # cold start (pre-registered)
                     else:
-                        ks = _decide(_Jvec(list(hist)), N, B_live, kc)
-                    k_cur[r] = ks
+                        ks = _decide(_Jvec(list(hist)), N, B_live, d_r, a_bar[0] or 0.0)
                     knew[r] = ks
-                    decs.append({"req": r, "Kobs": min(pend[r][0], KMAX), "kstar": ks})
+                    decs.append({"req": r, "Kobs": min(pend[r][0], KMAX), "d": d_r, "kstar": ks})
                 self._ll_kstar = knew
                 _fh.write(json.dumps({"t": round(time.monotonic(), 4), "N": N,
-                                      "B_live": round(B_live, 1), "decisions": decs}) + "\n")
+                                      "B_live": round(B_live, 1), "a_bar": round(a_bar[0] or 0.0, 3),
+                                      "decisions": decs}) + "\n")
                 self._ll_pending = {}
         except Exception:
             pass
