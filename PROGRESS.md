@@ -582,6 +582,32 @@ Smoke-verified before launch: k*=8 now reachable (C=8 steady meanK=4.52, distrib
 throughput 438.9 vs AR 393.8 = +11.5%); debug log confirms spec_token_ids truncated to 0 for k*=0
 requests (`sample(spec_len,kstar)` shows (0,0) entries). Rev-#4b re-runs all 9 cells (same names).
 
+### 2026-10-08 — LOAD-SIGNAL BUG FOUND + FIXED — Phase 4.6 rev-#4c (signal only; rule byte-for-byte unchanged)
+The rev-#4b run (9 cells, enforcement now correct: draft/s 415→68 at C=96) is **INVALID** and quarantined in
+`results/p4_6/rev4b_wrong_signal/`. Results were C=8 +6.1% / C=32 −9.1% / C=96 −9.0% vs AR, with the controller
+oscillating at saturation (meanK swung 0↔3.6, fracK0 55–100%). Root cause is a **mechanical signal bug**, not a
+rule failure:
+
+- The pre-registration specifies `B_live = running requests + scheduled speculative tokens this step`.
+  rev-#4b read it from `total_num_scheduled_tokens`, which **provably excludes the spec drafts** (vLLM v0.19.1
+  source: `scheduler.py:404-532` — per-request `num_new_tokens` = base decode/prefill tokens; drafts ride
+  separately in `scheduled_spec_decode_tokens`). Measured at C=96 steady: B_live=102.5 while the batch actually
+  verified ~708 tok/step (N=95 + 613 drafts/s). The controller was blind to the draft load that creates
+  saturation, so it oscillated instead of committing to SD-off.
+- Offline replay of the **unchanged** rev-#4 decision rule with the corrected signal picks the right k* at every
+  regime, stably across all draft levels: C=8 → k*=8/6 (truth: large K), C=32 → k*=0, C=96 → k*=0 with a
+  monotonically decreasing value curve (each extra draft token strictly loses).
+- First fix attempt (read `scheduler_output.scheduled_spec_decode_tokens` in update_from_output) also failed the
+  smoke test: that field is consumed/cleared before the hook runs (smoke read mean 3.05 vs true ~611 tok/step;
+  throughput 2457.6 but decisions still oscillating). Final fix: count drafts from THIS step's
+  `make_spec_decoding_stats` calls (`self._ll_pending`, populated inside `_orig_out` before decision code runs;
+  verified against source line 1366-1390 that it holds exactly the scheduled spec tokens per request), and use
+  only this-step draft counts for the per-request delta (no stale entries).
+
+rev-#4c = rev-#4b + corrected B_live. Decision rule, SPS profile, action space, cold start: all unchanged. This is
+the pre-registration's explicit allowance for a mechanical misfire (charter §13); it is NOT a new hypothesis
+revision and NOT threshold retuning. Smoke re-test in progress; then all 9 cells re-run under the same names.
+
 ### 2026-10-08 — COMPLETE — Phase 4.4 heterogeneous ISL×OSL: H-4.4a FALSIFY, H-4.4b FALSIFY
 All 30 cells re-ran clean on the hardened harness (own-server startup verified per cell; audit: 30/30 valid).
 Full results in `docs/phase4-p44-results.md`. Headline numbers (steady-state aggregate tok/s, mean over trials):
