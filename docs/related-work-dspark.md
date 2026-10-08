@@ -16,7 +16,7 @@ see `docs/paper-briefs.md` §3), DeepSpec repo, HF checkpoints — verified 2026
 | "Load" input | A **static, profiled throughput curve SPS(B)** (steps/sec vs verification batch size B), profiled once at init. Load enters *only* through the current total verification token count `B = Σ_r (1+l_r)` — i.e., it is a model of GPU compute load as a function of batch occupancy, **not** real-time queue depth / KV utilization / measured GPU state |
 | Objective | Maximize expected system throughput `Θ = τ·SPS(B)` where `τ = Σ_r(1+Σ_{j≤l_r} a_{r,j})` (expected accepted tokens), solved by global greedy sort on prefix-survival `a_{r,j}` with early stop at Θ non-increase |
 | Causality mechanism | In production the truncation capacity is set from confidence outputs **two steps earlier** (async gap = causal barrier) to stay compatible with continuous CUDA-graph replay + Zero-Overhead Scheduling |
-| Engine | **DeepSeek-V4 proprietary engine only** (ZOS + CUDA graphs; flattened variable-length execution via marker-tensor sparse attention). No vLLM integration released. |
+| Engine | **DeepSeek-V4 proprietary engine only** (ZOS + CUDA graphs; flattened variable-length execution via marker-tensor sparse attention). No vLLM integration released. ⚠️ *Superseded 2026-10-09: upstream vLLM has had a native DSpark drafter + adaptive verification since PR #47808 (2026-08-12); see `docs/dspark-native-audit.md`.* |
 
 ### Correction to the common shorthand
 "DSpark changes K by GPU load" is imprecise in two ways:
@@ -70,6 +70,17 @@ see `docs/paper-briefs.md` §3), DeepSpec repo, HF checkpoints — verified 2026
    This is a legitimate algorithmic baseline and is pre-registered below.
 
 ## 4. Runnability in our environment (documented per charter §10)
+
+> **⚠️ Dated correction (2026-10-09, see `docs/dspark-native-audit.md`):** the table below is the
+> original assessment made 2026-10-07 against our pinned vLLM 0.19.1 (released 2026-04-18). It is
+> **superseded** for current upstream: native DSpark landed in vLLM via PR #47808 on **2026-08-12**
+> (drafter from v0.25.0, adaptive verification from v0.28.0). The claim "No vLLM integration released" /
+> "no `DSpark*` arch in the registry" was true only for vLLM 0.19.1 and is **false for upstream since
+> Aug 2026**. On our SM86 hardware, adaptive verification is a definitive startup-time blocker (requires
+> varlen decode CUDA graphs: FA3/SM90 or FlashInfer trtllm-gen/SM100); fixed-K DSpark drafter has no arch
+> gate but needs a cu12-compatible vLLM build (our driver caps at CUDA 12.9; all DSpark-capable releases
+> ship cu13-only wheels). See `docs/dspark-native-audit.md` §2 for the source-level evidence and the
+> isolated-build attempt log.
 
 | Component | Available? | Why / why not |
 |---|---|---|

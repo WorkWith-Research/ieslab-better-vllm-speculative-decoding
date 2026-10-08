@@ -65,3 +65,17 @@ Arms: AR / K4 / K8 (reused from Phase 4.2 cells) + LDM (local EMA acceptance, me
 - SPS(B) table has only 13 points (from Phase 4.2 cells); a denser profile could change DSpark-rule's exact number but
   not the conclusion (its objective structurally over-credits high-K under saturation).
 - Deterministic workload → trial variance is jitter-only; C=96 gaps are all ≥20%, far above noise.
+
+> **⚠️ Dated correction (2026-10-09, per research addendum — original text preserved above):** a validity audit of the
+> DSpark-rule proxy (`experiments/dspark_controller/sitecustomize.py`) found two confirmed implementation flaws:
+> (F1) the decision map covered only requests that drafted last step (~6–7% of running at C=96); all others were
+> enforced at the KMAX=8 default, and a decided K=0 dropped out of the map and returned to KMAX on its next drafted
+> step — so the pre-registered all-K=0 SD-off fallback was never effectively enforced; (F4) SPS(B) was evaluated at
+> the decided subset's token count (~25), not the true batch (~96–130), so the cost term could not price saturation.
+> The "DSpark-rule is the worst arm" result therefore stands only as a statement about **our buggy proxy
+> implementation**, not about DSpark's decision rule. Additionally, this audit found that upstream vLLM has shipped a
+> native DSpark drafter + adaptive verification since PR #47808 (2026-08-12) — after our vLLM 0.19.1 pin but before
+> this project started — so the "no vLLM integration" premise of the proxy is superseded. Full evidence and a
+> pre-registered corrected rerun (P4.5R): `docs/dspark-proxy-validity.md`; native support/runnability:
+> `docs/dspark-native-audit.md`. Phase 4.6/5.1 controllers are unaffected (they already had the persistence +
+> true-batch fixes).

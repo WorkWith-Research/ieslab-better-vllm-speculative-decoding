@@ -816,4 +816,50 @@ by 0.4%); mechanism-cost force-off ≥AR−1% → FAIL (2355.2). Per §13: no re
 ~9% SD-off floor lives (scheduler vs model-runner spec fields) and pre-register a mechanism that removes it
 upstream (spec-path-free off-state), since no K-allocation or drafter-kernel skip can.
 
+### 2026-10-09 — Research addendum: native DSpark baseline validation + proxy-validity audit (Phase 5.2 deprioritized)
+A research addendum re-prioritized the project: before further scheduler work, verify the DSpark baseline and
+related-work assumptions against primary sources, in an isolated environment that does not touch the running
+setup. Phase 5.2 is paused until this audit completes. Findings (full docs below):
+
+**1. Native DSpark exists in upstream vLLM — our "no integration" premise is outdated.** PR #47808
+("DSpark confidence-scheduled verification") merged **2026-08-12**; blog 2026-08-14. Release boundary verified
+from tagged sources: DSpark drafter (`qwen3_dspark`) first in **v0.25.0**, adaptive verification
+(`adaptive_verification.py`) first in **v0.28.0** (404-checked v0.24–v0.27). Our pin vLLM 0.19.1 (released
+2026-04-18) genuinely predates it, so the proxy was a legitimate choice at design time — but the related-work
+claim needed a dated correction (added to `docs/related-work-dspark.md` §4 + table, and `docs/phase4-p5-results.md`).
+Upstream's budget rule is the **same argmax form** as our H-5.1 (`(N + cumsum(survival)) / cost`), with a trained
+confidence head (cumprod prefix-survival), separate draft/verify cost tables profiled from dummy CUDA-graph steps,
+and prefill priced via the non-draft token count — so "batch-level allocation pricing draft externality" is **no
+longer novel by itself**; our differentiator must be live serving-state inputs + cheap-drafter SD-off economics.
+
+**2. Hardware gates (SM86 / driver CUDA 12.9).** Adaptive verification: **definitive blocker** — it requires varlen
+decode CUDA graphs (`AttentionCGSupport.ALWAYS`): FA3 needs SM90, FlashInfer trtllm-gen needs SM100; FA2 on SM86 is
+`UNIFORM_BATCH` with no bound → rejected at startup by design. Fixed-K DSpark drafter: **no arch gate** in source —
+runnable IF we get a cu12-compatible vLLM build. But every DSpark-capable release (≥0.25) ships cu13-only wheels
+(torch 2.11/2.13, `libcudart.so.13`), and our driver caps at CUDA 12.9 → **Gate A fails on prebuilt wheels**
+(reproduced: import error). Isolated attempt (separate clone `/home/junior1/_dev/dspark-native-validation`, own venv,
+no changes to the research env): source build of v0.25.0 against CUDA 12.6 — fixed four sequential toolchain blockers
+(GCC 9.4 gate → clang 10 C++20 failure → installed GCC 13 via micromamba in user space → nvcc host-compiler still
+g++9.4, fixed with `CMAKE_CUDA_HOST_COMPILER`); build now compiling cleanly (in progress). Checkpoints are public and
+fit a 3090 (`deepseek-ai/dspark_qwen3_4b_block7` 2.79 GB + Qwen3-4B 8.06 GB).
+
+**3. Proxy validity audit — two confirmed implementation bugs in the Phase 4.5 DSpark-rule arm.**
+(F1) Decision map covered only requests that drafted last step (~6–7% of running at C=96); all others enforced at the
+KMAX=8 default; a decided K=0 dropped out and returned to KMAX next drafted step (317 observed instances) — the
+pre-registered all-K=0 SD-off fallback was **never effectively enforced**. (F4) SPS(B) evaluated at the decided
+subset's token count (~25), not the true batch (~96–130) → cost term could not price saturation. The "DSpark-rule is
+the worst arm" result therefore stands only as a statement about our buggy proxy, **not** about DSpark's decision rule;
+interpretation #1 of Phase 4.5 (rule can't learn load-driven K) is unsupported, #2 (live-load signal needed) weakened.
+Phase 4.6/5.1 controllers are unaffected (they already fixed this bug class — rev-#4b "decide for every running
+request" + persistent kstar). Corrected rerun **P4.5R** pre-registered in `docs/dspark-proxy-validity.md` (Track A,
+deferred until the native audit closes).
+
+**Docs:** `docs/dspark-native-audit.md` (new — support/runnability evidence), `docs/dspark-proxy-validity.md` (new —
+F1/F4 + P4.5R preregistration), dated corrections appended to `docs/related-work-dspark.md`, `docs/phase4-p5-results.md`.
+Historical measurements preserved; no raw results touched. **Next:** finish the isolated source build → Gates A–D on
+fixed-K DSpark (adaptive verification documented as SM86 blocker) → smallest matched AR-vs-fixedK-DSpark comparison →
+answer the 7 synthesis questions. Standing instructions: this entry + docs will be pushed at a safe checkpoint and
+tracked in GitHub Project / Discussion.
+
+
 
