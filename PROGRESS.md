@@ -785,3 +785,35 @@ wrong tokens). The main forward pass is independent of the drafter's buffers. Ve
 the batch argmax + OFF flag + worker-side propose-skip hook). `VLLM_LDM_BATCH_FORCEOFF=1` forces OFF always.
 Enforcement verified from decision logs: when OFF=True, draft/s ≈ 0 in metrics and no crash/corruption.
 
+**RESULT (2026-10-08, full grid + same-day controls): H-5.1 FALSIFIED as specified.** Full write-up:
+`docs/phase5-p1-results.md`. Server-side gen/s (steady t≥20s), all same-day:
+
+| arm | C=8 | C=32 | C=96 |
+|---|---|---|---|
+| AR (same-day control) | 387.0 (p2) | 1460.0 (p2) | **2641.6** |
+| ldm_load (P4.6) | 417.0 (+7.8%) | 1304.2 | 2235.2 |
+| **ldm_batch (H-5.1)** | **410.1 (+6.0%) PASS** | 1302.3 (−10.8%) | **2422.2 (−8.3% FAIL)** |
+| P4.6 force-0 floor (no skip, same-day) | — | — | 2431.9 (−7.9%) |
+| ldm_batch force-off (skip every step) | — | — | **2355.2 (−10.9% FAIL)** |
+
+Bounds: C=8 ≥+5% → PASS; C=96 ≥AR−noise (≥2634) → FAIL (2422.2); C=96 beats force-0 floor → FAIL (2422.2 < 2431.9,
+by 0.4%); mechanism-cost force-off ≥AR−1% → FAIL (2355.2). Per §13: no retuning; FALSIFIED as specified.
+
+**Two findings inside the falsification:**
+1. **The batch decision rule WORKS.** Decision logs: C=8 → K_batch≈5 (OFF 0%), C=32 → K_batch≈1, C=96 → K_batch=0
+   (OFF 99.3%), force-off → 100% OFF / 0 drafts. Even at the all-ones cold-start prior (OFF periods starve
+   `make_spec_decoding_stats` so acceptance never populates at C=96), the externality-priced argmax commits the
+   whole batch to SD-off at saturation — exactly what per-request greedy could not do (it oscillated with a ~20%
+   K=8 minority). The mechanism is validated; it simply acts on a cost model that under-prices "SD-off".
+2. **The draft-pass skip COSTS ~3.2% instead of removing overhead.** force-off (skip, 0 drafts) = 2355.2 vs the
+   no-skip floor (spec ON, k*=0) = 2431.9 — identical KV cache (117,264 tok), 0 OOM, err=0. The Phase 4.6 "fixed
+   spec-path overhead" (~4.7–8%) therefore does NOT live in the ngram draft kernel; skipping it at runtime is
+   strictly worse than leaving it running with zero drafts. Candidate causes (A/B in progress): (a) ldm_batch's
+   per-step hook CPU cost on the engine critical path (full batch decision computed even when OFF, vs P4.6 FORCE0
+   short-circuit), (b) the skip path changing vLLM internals (stale req_ids / event sync) in a costly way.
+
+**Phase 5 status: H-5.1 FALSIFIED (mechanism validated, cost model wrong). Next:** same-GPU interleaved A/B to
+attribute the 3.2% skip gap (controller CPU vs skip mechanics); then choose the next Phase 5 mechanism — the
+SD-off floor lives in spec-path bookkeeping, not the draft kernel, so the lever must be upstream of it.
+
+
