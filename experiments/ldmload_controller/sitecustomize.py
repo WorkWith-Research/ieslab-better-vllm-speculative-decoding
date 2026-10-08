@@ -95,7 +95,9 @@ def _install():
         print(f"[ldmload] WARNING: profile missing/incomplete — controller will run with flat 30 SPS", flush=True)
 
     state = defaultdict(lambda: deque(maxlen=W))   # req -> accepted-token history (DRAFTED steps only)
+    khist = {}                                      # req -> FROZEN acceptance history (persists after drafting stops)
     d_live = {}                                     # req -> actual scheduled draft tokens this step
+    last_kstar = {}                                 # req -> last decided k* (PERSISTENT; survives zero-draft steps)
     a_bar = [0.0]                                   # type: ignore[list-item]  EMA of mean acc/req-step over DRAFTED requests
     A_TAU = 0.95                                    # EMA decay (per step)
     global_J = [1.0] * (KMAX + 1)                   # cold-start prior
@@ -134,6 +136,7 @@ def _install():
         try:
             hist = state[request_id]
             hist.append(num_accepted_tokens)
+            khist[request_id] = list(hist)          # FROZEN snapshot (persists after drafting stops)
             n_obs[0] += 1
             for l in range(1, KMAX + 1):
                 global_J[l] = ((n_obs[0] - 1) * global_J[l] + (1 if num_accepted_tokens >= l else 0)) / n_obs[0]
@@ -148,35 +151,49 @@ def _install():
     def _hooked_out(self, scheduler_output, model_output):
         res = _orig_out(self, scheduler_output, model_output)
         try:
-            pend = getattr(self, "_ll_pending", None)
-            if pend:
-                N = len(self.running) or len(pend)
-                B_live = float(getattr(scheduler_output, "total_num_scheduled_tokens", 0)) \
-                    or sum(len(v) for v in getattr(scheduler_output, "scheduled_spec_decode_tokens", {}).values()) + N
-                # batch mean accepted/request-step (measured) over DRAFTED requests only,
-                # INCLUDING the +1 bonus token each drafted request emits every step:
-                #   a_bar = (sum acc + n_drafted) / n_drafted
-                # (Zero-draft steps never reach make_spec_decoding_stats, so they cannot poison this.)
-                drafted = [r for r in pend if d_live.get(r, 0) > 0]
-                if drafted:
-                    step_acc = (sum(state[r][-1] for r in drafted) + len(drafted)) / len(drafted)
-                    a_bar[0] = step_acc if a_bar[0] == 0.0 else A_TAU * a_bar[0] + (1 - A_TAU) * step_acc
-                knew = {}
-                decs = []
-                for r in pend:
-                    d_r = d_live.get(r, 0)
-                    hist = state.get(r)
-                    if not hist:
-                        ks = 4   # cold start (pre-registered)
-                    else:
-                        ks = _decide(_Jvec(list(hist)), N, B_live, d_r, a_bar[0] or 0.0)
-                    knew[r] = ks
-                    decs.append({"req": r, "Kobs": min(pend[r][0], KMAX), "d": d_r, "kstar": ks})
-                self._ll_kstar = knew
-                _fh.write(json.dumps({"t": round(time.monotonic(), 4), "N": N,
-                                      "B_live": round(B_live, 1), "a_bar": round(a_bar[0] or 0.0, 3),
-                                      "decisions": decs}) + "\n")
-                self._ll_pending = {}
+            pend = getattr(self, "_ll_pending", None) or {}
+            N = len(self.running) or (len(pend) if pend else 0)
+            B_live = float(getattr(scheduler_output, "total_num_scheduled_tokens", 0)) \
+                or sum(len(v) for v in getattr(scheduler_output, "scheduled_spec_decode_tokens", {}).values()) + N
+            # batch mean accepted/request-step (measured) over DRAFTED requests only,
+            # INCLUDING the +1 bonus token each drafted request emits every step:
+            #   a_bar = (sum acc + n_drafted) / n_drafted
+            # (Zero-draft steps never reach make_spec_decoding_stats, so they cannot poison this.)
+            drafted = [r for r in pend if d_live.get(r, 0) > 0]
+            if drafted:
+                step_acc = (sum(state[r][-1] for r in drafted) + len(drafted)) / len(drafted)
+                a_bar[0] = step_acc if a_bar[0] == 0.0 else A_TAU * a_bar[0] + (1 - A_TAU) * step_acc
+            # ENFORCEMENT FIX (rev-#4, mechanical): decide for EVERY running request each step,
+            # not just drafted ones. Previously k*=0 requests stopped being drafted, vanished from
+            # the per-step decision map, and their next drafts fell back to the cold-start default
+            # (kstar=4) — so "SD-off" was never actually enforced (measured: 415 draft tok/s at C=96
+            # despite 99.6% k*=0 decisions). Decisions now persist in last_kstar; requests without a
+            # live drafted history use their FROZEN acceptance history (khist), so a request frozen
+            # at k*=0 stays at k*=0 unless the LIVE load regime makes speculation profitable again.
+            decs = []
+            for req in list(self.running):
+                r = req.request_id
+                d_r = d_live.get(r, 0)
+                hist = state[r] if (r in state and state[r]) else khist.get(r)
+                if not hist:
+                    # Cold start (revised within rev-#4, mechanical): KMAX, not 4. A ceiling of 4
+                    # makes k*=8 UNREACHABLE — the controller can never observe acceptance at
+                    # positions >4, so its J estimate is capped and it can never choose k>4, which
+                    # cannot meet the pre-registered C=8 success bar (K8 = +10.3% vs AR; K4 = +5.5%).
+                    # An optimistic KMAX start lets each request observe deep acceptance once before
+                    # the regime term takes over (same rationale as the Phase 4.5 LDM cold-start fix:
+                    # a pessimistic start is self-fulfilling). The transient cost at saturation is
+                    # bounded to the first ~150 steps of each cell.
+                    ks = KMAX
+                else:
+                    ks = _decide(_Jvec(list(hist)), N, B_live, d_r, a_bar[0] or 0.0)
+                last_kstar[r] = ks
+                decs.append({"req": r, "Kobs": min(pend.get(r, (d_r,))[0], KMAX), "d": d_r, "kstar": ks})
+            self._ll_kstar = dict(last_kstar)
+            _fh.write(json.dumps({"t": round(time.monotonic(), 4), "N": N,
+                                  "B_live": round(B_live, 1), "a_bar": round(a_bar[0] or 0.0, 3),
+                                  "decisions": decs}) + "\n")
+            self._ll_pending = {}
         except Exception:
             pass
         return res

@@ -555,6 +555,33 @@ constant overhead, which is exactly what rev-#4's unified fit absorbs.
 re-analyzed on the full clean 30-cell set. Phase 4.6 rev-#4 cells (C=8/32/96 ×3) follow on the same GPUs after their
 respective re-runs finish.
 
+### 2026-10-08 — ENFORCEMENT BUG FOUND + FIXED — Phase 4.6 rev-#4b (mechanical fixes, rule unchanged)
+The first rev-#4 cell run (9 cells, all startup-valid) was **INVALID** and quarantined in
+`results/p4_6/rev4_unenforced/`. Two mechanical flaws found by auditing what was ACTUALLY scheduled
+(`Kobs` in decision logs + spec-decode counters), not just what the controller decided:
+
+1. **k*=0 was never enforced.** The per-step decision map was built only from DRAFTED requests
+   (`make_spec_decoding_stats` never fires for zero-draft steps). A request set to k*=0 stopped being
+   drafted, vanished from the map, and its next drafts fell back to the cold-start default (kstar=4) —
+   i.e. "SD-off" oscillated into K≈4 one step later. Measured: C=96 chose k*=0 for 99.6% of steps yet
+   still verified 415 draft tok/s (~3.7 drafts/req-step), reaching only ~2013 tok/s vs true AR's
+   2457.6 (−18%) — the spec-decode path overhead was paid without any speculation benefit.
+2. **Cold-start ceiling of K=4 made k*=8 unreachable.** The controller can never observe acceptance at
+   positions >4, so its J estimate is capped and it can never choose k>4 — which cannot meet the
+   pre-registered C=8 success bar (K8 = +10.3% vs AR; K4 = only +5.5%).
+
+Fixes (both mechanical; the rev-#4 decision rule, unified SPS curve, and measured-state inputs are
+UNCHANGED — this is not a new hypothesis revision per charter §13):
+1. Decide for EVERY running request each step; decisions persist in `last_kstar`; requests without a
+   live drafted history use their FROZEN acceptance history (`khist`), so k*=0 stays k*=0 unless the
+   live load regime makes speculation profitable again (the regime term is re-evaluated every step).
+2. Cold start KMAX instead of 4 (a pessimistic ceiling is self-fulfilling; same rationale as the Phase
+   4.5 LDM cold-start fix). Transient cost at saturation bounded to each cell's first ~150 steps.
+
+Smoke-verified before launch: k*=8 now reachable (C=8 steady meanK=4.52, distribution includes k=8;
+throughput 438.9 vs AR 393.8 = +11.5%); debug log confirms spec_token_ids truncated to 0 for k*=0
+requests (`sample(spec_len,kstar)` shows (0,0) entries). Rev-#4b re-runs all 9 cells (same names).
+
 ### 2026-10-08 — COMPLETE — Phase 4.4 heterogeneous ISL×OSL: H-4.4a FALSIFY, H-4.4b FALSIFY
 All 30 cells re-ran clean on the hardened harness (own-server startup verified per cell; audit: 30/30 valid).
 Full results in `docs/phase4-p44-results.md`. Headline numbers (steady-state aggregate tok/s, mean over trials):
