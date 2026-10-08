@@ -12,7 +12,7 @@ GitHub Project: https://github.com/orgs/WorkWith-Research/projects/1 (projectV2 
 | `PVTI_lADOEyEOMs4Bl95-zg-9nfY` | #4 | Phase 3: Prototype — per-request dynamic-K controller + live validation | Done |
 | `PVTI_lADOEyEOMs4Bl95-zg_JZ9c` | #10 | Phase 4: Realistic-workload validation — load, SPEED-Bench, heterogeneous ISL/OSL, DSpark | In progress |
 
-**Current Phase-4 checkpoint:** Phase 4.1 saturation characterization, Phase 4.2 fixed-K × load, Phase 4.3 SPEED-Bench long-prefill validation, and Phase 4.5 DSpark-rule vs LDM are complete. Phase 4.4 heterogeneous ISL × OSL remains outstanding; Phase 4.6 live-load-aware adaptive speculation is the next controller experiment.
+**Current Phase-4 checkpoint:** Phase 4.1 saturation characterization, Phase 4.2 fixed-K × load, Phase 4.3 SPEED-Bench long-prefill validation, Phase 4.4 heterogeneous ISL×OSL (H-4.4a/b FALSIFY — see docs/phase4-p44-results.md), and Phase 4.5 DSpark-rule vs LDM are complete. Phase 4.6 live-load-aware adaptive speculation is running (rev-#4, unified SPS curve).
 
 Status option IDs: Backlog=`f75ad846` Ready=`61e4505c` In progress=`47fc9ee4`
 In review=`df73e18b` Done=`98236657`. Update via `scripts/set_item_status.sh <item-id> <option-id>`.
@@ -554,3 +554,24 @@ constant overhead, which is exactly what rev-#4's unified fit absorbs.
 **Phase 4.4 re-run plan (hardened harness):** K=1 ×6 + knone c96 t2 on GPU0; K=2 ×6 on GPU1 — then H-4.4a/b
 re-analyzed on the full clean 30-cell set. Phase 4.6 rev-#4 cells (C=8/32/96 ×3) follow on the same GPUs after their
 respective re-runs finish.
+
+### 2026-10-08 — COMPLETE — Phase 4.4 heterogeneous ISL×OSL: H-4.4a FALSIFY, H-4.4b FALSIFY
+All 30 cells re-ran clean on the hardened harness (own-server startup verified per cell; audit: 30/30 valid).
+Full results in `docs/phase4-p44-results.md`. Headline numbers (steady-state aggregate tok/s, mean over trials):
+
+| C | none (AR) | K=1 | K=2 | K=4 | K=8 | argmax |
+|---|---|---|---|---|---|---|
+| 32 | **1314.1** | 1022.0 | 1061.5 | 1156.5 | 1137.7 | K=none |
+| 96 | **2009.9** | 1073.9 | 1228.7 | 1320.1 | 1307.4 | K=none |
+
+- **H-4.4a FALSIFY:** all four ISL×OSL classes share argmax K=none at C=96 (and C=32) — class identity does
+  not change the optimal K on this drafter/corpus.
+- **H-4.4b FALSIFY:** TPOT p50 degradation of K8 vs AR at C=96 is large in every class (SS +64%, SL +39.5%,
+  LS +67.5%, LL +42.4%) with no monotone ISL trend.
+- Mechanism: ngram acceptance on ShareGPT-derived text decays steeply with K (acc_rate K=8: 0.38 at C=32,
+  0.50 at C=96 — far below the Phase 4.2 mixed workload), so ΣJ never compensates the B-growth cost; K=1 is
+  the worst arm (pays spec-path overhead for ~1 token). Same load-regime × draftability story as Phases 4.2/4.3,
+  with class membership NOT a useful feature for K selection here. The per-class TPOT harm remains a real
+  SLO-relevant effect.
+
+**Phase 4 status: 4.1✓ 4.2✓ 4.3✓ 4.4✓ 4.5✓; 4.6 rev-#4 running (9 cells on both GPUs).**
