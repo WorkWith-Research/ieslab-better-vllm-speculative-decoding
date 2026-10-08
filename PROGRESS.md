@@ -732,6 +732,31 @@ gate is dead at C=96 given Phase 4.6's known oscillation (P(all 96 simultaneousl
 would falsify for a mechanical reason. Replaced with the batch-level argmax above, which is the actual externality
 fix and can commit the batch to SD-off. No run used the flawed gate.
 
+**Mechanical corrections M1+M2 (post-smoke s1/s2 OOM, charter §13 — decision rule shape UNCHANGED; the
+argmax `SPS(B + N·k)·(1+mean_l[k])` is exactly as pre-registered above):**
+- **Root cause of the s1/s2 OOM (diagnosed from decision logs + Phase 4.6 ldmload control run, which ran C=96
+  clean for 150s @ 2449.7 tok/s → environment fine, controller at fault):** the batch argmax was CORRECT even at
+  the all-ones cold-start prior (B_live=96 → K_batch=0, OFF ~98% of steps); the fatal step had K_batch=1 but the
+  ON-path ALLOCATION fell back to Phase 4.6's per-request rule, which with an empty acceptance history (a_bar=0 —
+  OFF periods schedule no drafts so `make_spec_decoding_stats` never fires) over-estimated J_r and scheduled
+  sum_k*=728 on top of a prefill wave → ~864 sample positions → 846 MiB `get_token_bin_counts_and_mask` OOM.
+  The allocation violated the cost model the batch decision had just priced (budget ~91 tokens).
+- **M1 — decode-only load signal:** B_eff and N are computed over DECODE-phase requests only
+  (`num_computed_tokens ≥ num_prompt_tokens`, tracked via cumulative `num_scheduled_tokens`), because
+  speculation only acts on decode-phase requests and the SPS profile's B-axis is total scheduled positions.
+  Verified: at steady state (B_live≈96) N_dec mean = 93.2/96; during prefill waves N_dec drops with the number
+  of actually-decoding requests, which bounds total drafts to `N_dec·K_batch` ≤ ~104/step in s3 (vs fatal ~864).
+- **M2 — allocation matches the priced model:** when ON at K_batch=k, k*=k for every DECODE request (uniform),
+  k*=0 for prefill requests. This is exactly what `SPS(B_eff + N_dec·k)` priced and is the truest expression of
+  H-5.1 (the batch decision IS the allocation; per-request greedy is what Phase 4.6 falsified).
+- **No clamp on B in the argmax** (as pre-registered): clamping to the profile's max fitted B makes SPS constant
+  for all k above the knee, so the argmax degenerates to "pick max k" exactly at high load — destroying the
+  externality pricing (verified numerically: with clamp C96-steady → K_batch=8; without → K_batch=0).
+  Extrapolating SPS(B)=A/(Bc+Cc·B^D) beyond the fitted range is monotone-decreasing and physically sensible.
+- **Smoke s3 (C=96, 90s, post-M1/M2):** err=0, 0 OOM lines, OFF 98.9% of steps, max drafts/step=104, steady
+  server-side gen/s ≈ 2394 (vs AR 2557.2). Mechanism fires as designed; full pre-registered trials below are
+  the adjudication.
+
 **Cells:** ldm_batch × C ∈ {8, 32, 96} × 3 trials = 9 cells, mixed workload (Phase 4.2), DUR=150s, eager.
 Plus 1 diagnostic: `ldm_batch` with `VLLM_LDM_BATCH_FORCEOFF=1` at C=96 (forces OFF always → skips draft pass
 always; measures the pure "spec path fully disabled at runtime" behavior — should ≈ AR if the skip is clean).
