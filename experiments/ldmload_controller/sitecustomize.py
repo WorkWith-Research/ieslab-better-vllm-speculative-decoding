@@ -185,13 +185,33 @@ def _install():
         res = _orig_drafts(self, draft_token_ids)
         try:
             ks = getattr(self, "_ll_kstar", None)
+            n_found = n_trunc = n_skip = 0
             for req_id in getattr(draft_token_ids, "req_ids", ()):
                 kstar = ks.get(req_id, 4) if ks else 4
                 request = self.requests.get(req_id)
-                if request is not None and len(request.spec_token_ids) > kstar:
+                if request is None:
+                    n_skip += 1
+                    continue
+                cur = len(request.spec_token_ids)
+                if cur > kstar:
                     request.spec_token_ids = request.spec_token_ids[:kstar]
-        except Exception:
-            pass
+                    n_trunc += 1
+                else:
+                    n_found += 1
+            # DEBUG (enforcement check): log every Nth call so we can verify truncation actually happens.
+            _hooked_drafts._calls = getattr(_hooked_drafts, "_calls", 0) + 1
+            if _hooked_drafts._calls % 200 == 1:
+                rids = list(getattr(draft_token_ids, "req_ids", ()))
+                sample = {}
+                for rid in rids[:3]:
+                    rq = self.requests.get(rid)
+                    sample[rid[-6:]] = (len(rq.spec_token_ids) if rq is not None else None,
+                                        ks.get(rid) if ks else None)
+                print(f"[ldmload][drafts] call#{_hooked_drafts._calls} ks={'yes' if ks else 'NO'} "
+                      f"ks_n={len(ks) if ks else 0} n_req={len(rids)} "
+                      f"trunc={n_trunc} keep={n_found} skip={n_skip} sample(spec_len,kstar)={sample}", flush=True)
+        except Exception as e:
+            print(f"[ldmload][drafts] EXC {type(e).__name__}: {e}", flush=True)
         return res
 
     Scheduler.make_spec_decoding_stats = _hooked_stats
