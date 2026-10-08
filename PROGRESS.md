@@ -682,4 +682,81 @@ verified from decision logs: 99.5% of k*=0 decisions show zero scheduled drafts)
   point to batch-level K allocation with externality pricing and/or dynamic enable/disable of the spec path.
 
 **Phase 4 status: 4.1✓ 4.2✓ 4.3✓ 4.4✓ 4.5✓ 4.6✓ (H-4.6 FALSIFIED, mechanism characterized). Phase 5 NOT STARTED
-(reserved for speculation-aware scheduler design/implementation).**
+**Phase 5 status: NOT STARTED (reserved for speculation-aware scheduler design/implementation).**
+
+### 2026-10-08 — Pre-registration — Phase 5: speculation-aware scheduler with batch-level SD on/off + draft-pass skip (H-5.1)
+
+**Motivation (from Phase 4.6 measurement, not speculation):** the C=96 gap decomposes into
+~8 pts of *allocation* loss (per-request greedy vs SD-off optimum) + ~4.7 pts of *fixed spec-path
+overhead* (force-0 floor: a spec-enabled server with k*=0 for all requests still runs 2437.6 vs AR
+2557.2). The second component is **structurally unreachable by any K-only controller** — it is the cost
+of running the ngram GPU draft pass every step (scatter + matching kernel + CPU copy), which vLLM 0.19.1
+runs unconditionally whenever `speculative_config` is set, even when zero drafts are scheduled (verified in
+source: gpu_model_runner.py:4205-4249 gates the draft pass on `spec_config is not None`, NOT on whether any
+drafts were scheduled). Closing it requires a *scheduler-level* action: dynamically disabling the spec path
+itself, not just setting K=0.
+
+**The externality (why per-request fails, Phase 4.6):** each request's argmax prices its OWN accepted tokens
+against SPS(B) but NOT the slowdown its drafts impose on the other N−1 requests' verification — a negative
+externality that grows with B. At saturation the per-request greedy over-admits (a ~20% minority stays at K=8,
+batch oscillates). The fix is to make the decision at the **batch** level, where the total B and total slowdown
+are visible.
+
+**Hypothesis (H-5.1):** a speculation-aware scheduler that (i) makes a **batch-level SD on/off decision** from
+live load state — committing the WHOLE batch to K=0 when the batch-level argmax says SD-off wins — and (ii)
+when OFF, **skips the ngram draft pass entirely** (a new scheduler/worker-level action that removes the fixed
+spec-path overhead) — reaches **AR throughput at saturation** while retaining the low-load gain.
+
+**Controller `ldm_batch` (rule fixed BEFORE any run):**
+- Per-request acceptance J_r[l] = P(acc ≥ l) over last W=8 steps (causal), exactly as Phase 4.6.
+- Per-request k*_r computed EXACTLY as Phase 4.6 rev-#4c: `argmax_{k∈0..8} [(N−1)(1+a_bar) + 1 + Σ_{l≤k} J_r[l]] · SPS(B_live + (k − d_r))`
+  (kept so the comparison to Phase 4.6 is clean — same acceptance signal, same SPS profile).
+- **NEW batch-level decision:** `K_batch = argmax_{k∈0..8} SPS(B_live + N·k) · (1 + mean_l[k])` where
+  `mean_l[k] = mean_r Σ_{l≤k} J_r[l]`. This prices the externality: all N requests' slowdown from N·k extra
+  scheduled tokens is in the single SPS term. (The batch-level N factor cancels in argmax.)
+- **NEW batch-level action:** if `K_batch == 0` → set `OFF=True`, override ALL per-request k*_r to 0, AND skip
+  the ngram draft pass this step (worker-side: `GPUModelRunner.propose_draft_token_ids` returns early). vLLM's
+  forward path is already AR when `scheduled_spec_decode_tokens` is empty (gpu_model_runner.py:2040); skipping
+  the draft pass removes the residual per-step overhead. If `K_batch > 0` → `OFF=False`, use per-request k*_r
+  as Phase 4.6, normal drafting.
+- **No concurrency label C anywhere.** Only measured (N, B_live, d_r, a_bar, J_r) + static SPS profile.
+- OFF is a module-level flag visible to both scheduler and worker (TP=1 → UniProcExecutor → same process).
+
+**Why this is a NEW hypothesis (not a Phase 4.6 revision):** Phase 4.6's action space was K∈{0..8} per request,
+decided independently. Phase 5 adds (a) a batch-level decision that can commit the whole batch to SD-off (fixing
+the externality) and (b) a scheduler/worker-level action to disable the spec path itself (removing fixed overhead).
+Different mechanism + different contribution; charter §13 revision budget resets for this new hypothesis.
+
+**Pre-run correction (before any run):** an earlier draft of H-5.1 gated OFF on "ALL per-request k*_r == 0". That
+gate is dead at C=96 given Phase 4.6's known oscillation (P(all 96 simultaneously k*=0) ≈ 0.81^96 ≈ 1e-12), so it
+would falsify for a mechanical reason. Replaced with the batch-level argmax above, which is the actual externality
+fix and can commit the batch to SD-off. No run used the flawed gate.
+
+**Cells:** ldm_batch × C ∈ {8, 32, 96} × 3 trials = 9 cells, mixed workload (Phase 4.2), DUR=150s, eager.
+Plus 1 diagnostic: `ldm_batch` with `VLLM_LDM_BATCH_FORCEOFF=1` at C=96 (forces OFF always → skips draft pass
+always; measures the pure "spec path fully disabled at runtime" behavior — should ≈ AR if the skip is clean).
+Baselines reused: AR / K4 / K8 / LDM / DSpark-rule / ldm_load / force-0 from Phase 4.2/4.5/4.6 (no re-run).
+
+**Success (pre-registered):**
+- **C=96:** ldm_batch ≥ AR − noise (≈0.3%, i.e., ≥2541 tok/s) AND beats force-0 (2437.6, proves the draft-pass
+  skip removes the fixed overhead) AND beats ldm_load (2235.2).
+- **C=8:** ldm_batch ≥ +5% vs AR (i.e., ≥406 tok/s) — the batch decision must keep speculation ON at low load.
+- **Mechanism cost:** force-off diagnostic at C=96 ≥ AR − 1% (≥2532 tok/s) — confirms the skip is clean
+  (runtime-disabled spec path ≈ spec-disabled server).
+**FALSIFY** if it fails any bound: then the batch-level on/off + draft-pass-skip as specified does not reach AR at
+saturation, and we report that (no post-hoc retuning, charter §13).
+
+**Interpretation guard:** if ldm_batch ≈ ldm_load at C=96 (OFF never fires or doesn't help), the batch decision is
+not committing to SD-off — FALSIFIED. If ldm_batch reaches AR at C=96 but loses the C=8 gain, the batch decision is
+too aggressive (commits to SD-off when speculation should be on) — also FALSIFIED as specified.
+
+**Correctness note:** skipping the draft pass leaves the ngram drafter's token-history buffer stale during OFF
+periods; on resume, acceptance may dip for a few steps (stale context) but output stays LOSSLESS by construction
+(speculative decoding verifies every draft against the target model — bad/stale drafts are rejected, never produce
+wrong tokens). The main forward pass is independent of the drafter's buffers. Verified empirically in smoke tests
+(output validity + no crash + acceptance recovers on resume).
+
+**Implementation:** new controller `experiments/ldm_batch_controller/sitecustomize.py` (extends Phase 4.6's with
+the batch argmax + OFF flag + worker-side propose-skip hook). `VLLM_LDM_BATCH_FORCEOFF=1` forces OFF always.
+Enforcement verified from decision logs: when OFF=True, draft/s ≈ 0 in metrics and no crash/corruption.
+
