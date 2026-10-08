@@ -613,6 +613,25 @@ the pre-registration was implemented correctly from the start; what broke was pe
 Smoke cells ts1–ts5 (diagnostics only) are archived in `results/p4_6/smoke_diagnostics/`. rev-#4c re-runs all 9 cells
 under the same names; classification against the pre-registered bounds follows.
 
+**Interim measurements (while the grid runs):**
+- **SD-off floor at C=96 (force k*=0 for all requests, spec path still enabled): 2437.6 gen/s vs AR 2557 = −4.7%.**
+  Even with speculation fully OFF, a spec-enabled server sits ~4.7% below a spec-disabled one at saturation — the fixed
+  cost of running the spec-decode code path (draft bookkeeping + synthetic rejection sampler) with zero drafts. No
+  in-loop controller restricted to K∈{0..8} can eliminate it; reaching AR requires disabling the path itself
+  (a scheduler-level action → Phase 5 territory). This makes the literal pre-registered bound "ldm_load ≥ AR − noise"
+  structurally unreachable by a K-only controller, independent of how well the load signal works.
+- **Clean-plumbing rev-#4c still oscillates at C=96** (smoke: meanK≈1.5, fracK0≈81%, gen/s≈2308 — WORSE than force-0's
+  2437). The per-request greedy rule over-admits speculation at saturation because each request's decision to draft
+  does not price the shared-batch slowdown its drafts impose on the other N−1 requests (an externality absent from the
+  value function). Constant SD-off beats the adaptive rule in this regime. This is a mechanistic finding about
+  per-request greedy allocation under compute saturation — exactly the "opportunity cost of speculative verification
+  inside the scheduler" that motivates Phase 5 — not a further plumbing bug. Per charter §13 (revision budget), no more
+  controller changes: the full 9-cell grid runs once with this harness and is classified as-is.
+- **Client-metric caveat:** `steady_throughput_tok_s` = completions-in-window × 256 tokens; open-loop in-flight requests
+  at window end are excluded, so it undercounts by an arm-dependent amount (AR/force-0/smokes all "coincidentally" read
+  2457.6 while their true server rates differ: 2557 / 2437.6 / ~2350). Server-side generation-counter rate is the
+  trustworthy cross-arm metric; `experiments/analyze_p46_server.py` reports both.
+
 ### 2026-10-08 — COMPLETE — Phase 4.4 heterogeneous ISL×OSL: H-4.4a FALSIFY, H-4.4b FALSIFY
 All 30 cells re-ran clean on the hardened harness (own-server startup verified per cell; audit: 30/30 valid).
 Full results in `docs/phase4-p44-results.md`. Headline numbers (steady-state aggregate tok/s, mean over trials):
