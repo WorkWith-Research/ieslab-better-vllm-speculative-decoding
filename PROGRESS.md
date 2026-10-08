@@ -582,31 +582,36 @@ Smoke-verified before launch: k*=8 now reachable (C=8 steady meanK=4.52, distrib
 throughput 438.9 vs AR 393.8 = +11.5%); debug log confirms spec_token_ids truncated to 0 for k*=0
 requests (`sample(spec_len,kstar)` shows (0,0) entries). Rev-#4b re-runs all 9 cells (same names).
 
-### 2026-10-08 — LOAD-SIGNAL BUG FOUND + FIXED — Phase 4.6 rev-#4c (signal only; rule byte-for-byte unchanged)
-The rev-#4b run (9 cells, enforcement now correct: draft/s 415→68 at C=96) is **INVALID** and quarantined in
+### 2026-10-08 — PLUMBING BUGS FOUND + FIXED — Phase 4.6 rev-#4c (mechanical fixes; rule byte-for-byte unchanged)
+The rev-#4b run (9 cells, enforcement correct: draft/s 415→68 at C=96) is **INVALID** and quarantined in
 `results/p4_6/rev4b_wrong_signal/`. Results were C=8 +6.1% / C=32 −9.1% / C=96 −9.0% vs AR, with the controller
-oscillating at saturation (meanK swung 0↔3.6, fracK0 55–100%). Root cause is a **mechanical signal bug**, not a
-rule failure:
+oscillating at saturation (meanK swung 0↔3.6, fracK0 55–100%).
 
-- The pre-registration specifies `B_live = running requests + scheduled speculative tokens this step`.
-  rev-#4b read it from `total_num_scheduled_tokens`, which **provably excludes the spec drafts** (vLLM v0.19.1
-  source: `scheduler.py:404-532` — per-request `num_new_tokens` = base decode/prefill tokens; drafts ride
-  separately in `scheduled_spec_decode_tokens`). Measured at C=96 steady: B_live=102.5 while the batch actually
-  verified ~708 tok/step (N=95 + 613 drafts/s). The controller was blind to the draft load that creates
-  saturation, so it oscillated instead of committing to SD-off.
-- Offline replay of the **unchanged** rev-#4 decision rule with the corrected signal picks the right k* at every
-  regime, stably across all draft levels: C=8 → k*=8/6 (truth: large K), C=32 → k*=0, C=96 → k*=0 with a
-  monotonically decreasing value curve (each extra draft token strictly loses).
-- First fix attempt (read `scheduler_output.scheduled_spec_decode_tokens` in update_from_output) also failed the
-  smoke test: that field is consumed/cleared before the hook runs (smoke read mean 3.05 vs true ~611 tok/step;
-  throughput 2457.6 but decisions still oscillating). Final fix: count drafts from THIS step's
-  `make_spec_decoding_stats` calls (`self._ll_pending`, populated inside `_orig_out` before decision code runs;
-  verified against source line 1366-1390 that it holds exactly the scheduled spec tokens per request), and use
-  only this-step draft counts for the per-request delta (no stale entries).
+**Root cause (corrected after live instrumentation — see below):** the per-request draft count `d_r` used by the
+value function's `(k − d_r)` delta carried **stale values from earlier steps** (the dict was never cleared), so a
+request currently at k*=0 still showed its last drafted step's d≈8, inflating the value of further drafts. This is
+what drove the oscillation.
 
-rev-#4c = rev-#4b + corrected B_live. Decision rule, SPS profile, action space, cold start: all unchanged. This is
-the pre-registration's explicit allowance for a mechanical misfire (charter §13); it is NOT a new hypothesis
-revision and NOT threshold retuning. Smoke re-test in progress; then all 9 cells re-run under the same names.
+**IMPORTANT CORRECTION to an earlier (wrong) narrative:** during diagnosis I hypothesized that B_live
+(`total_num_scheduled_tokens`) EXCLUDED the spec drafts and re-derived a "708 tok/step" figure from those same stale
+per-request counts. Live ground-truth instrumentation on vLLM 0.19.1 **falsified this**: `total_num_scheduled_tokens`
+DOES include scheduled spec drafts (sampled step: N=96 with 8 drafts → total_sched=104; source: scheduler.py
+num_new_tokens = num_tokens_with_spec + placeholders − computed). So rev-#4b's B_live was already the correct
+verification-batch signal, and the "708 tok/step" number was an artifact of stale d values. The load-signal part of
+the pre-registration was implemented correctly from the start; what broke was per-request state plumbing.
+
+**Fixes (all mechanical; decision rule, SPS profile, action space unchanged — charter §13 misfire allowance):**
+1. Per-request draft counts now live in a closure dict (`step_d`) populated by the stats hook and **cleared at the end
+   of every update_from_output**, so d_r is strictly this-step (k*=0 requests see d_r=0). Instance-attribute handoff
+   (`self._ll_pending`) was dropped: it was observed to read empty at decision time in this vLLM build, which is why
+   two intermediate fix attempts (smoke cells ts1/ts2) silently no-op'd. Closure state is immune to that.
+2. Enforcement (decide for every running request; persistent last_kstar; khist frozen history) and KMAX cold start
+   from the rev-#4b fixes are retained.
+3. Diagnostic env `VLLM_LDMLOAD_FORCE0` added: forces k*=0 for all requests, to measure the **SD-off floor** on a
+   spec-enabled server (decomposes the C=96 gap into "controller still speculating" vs "fixed spec-path overhead").
+
+Smoke cells ts1–ts5 (diagnostics only) are archived in `results/p4_6/smoke_diagnostics/`. rev-#4c re-runs all 9 cells
+under the same names; classification against the pre-registered bounds follows.
 
 ### 2026-10-08 — COMPLETE — Phase 4.4 heterogeneous ISL×OSL: H-4.4a FALSIFY, H-4.4b FALSIFY
 All 30 cells re-ran clean on the hardened harness (own-server startup verified per cell; audit: 30/30 valid).

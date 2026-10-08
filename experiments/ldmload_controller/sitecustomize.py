@@ -29,10 +29,26 @@ Mechanics: server runs with SPEC_METHOD=ngram K=KMAX; this controller truncates 
 drafts to its k* in update_draft_token_ids (same enforcement as the Phase 4.5 LDM controller).
 k*=0 is a reachable outcome (SD off for that request).
 
+REV-#4c PLUMBING FIXES (mechanical only; decision rule byte-for-byte unchanged — see PROGRESS.md):
+1. ENFORCEMENT: decide for EVERY running request each step; decisions persist in last_kstar so a
+   k*=0 request stays k*=0 across zero-draft steps (rev-#4 fell back to cold-start K=4 one step
+   later, so "SD-off" was never actually enforced).
+2. COLD START: KMAX instead of 4 (a ceiling of 4 makes k*=8 unreachable — the controller can never
+   observe acceptance beyond position 4).
+3. THIS-STEP STATE: per-request draft counts now live in a closure dict (step_d) populated by the
+   stats hook and cleared at the END of each update_from_output. The old d_live/d_seen/instance-attr
+   plumbing leaked stale values across steps (d_r for k*=0 requests carried last step's drafts,
+   corrupting the value function's (k - d_r) delta) — instance attributes were also observed to be
+   empty at read time in this vLLM build, so closure state is used instead.
+4. B_live = total_num_scheduled_tokens (verified against source + live instrumentation to INCLUDE
+   scheduled spec drafts: N=96 with 8 drafts -> total_sched=104), falling back to N + step drafts.
+
 Activated ONLY when VLLM_LDMLOAD_OUT is set. Env:
   VLLM_LDMLOAD_OUT    jsonl path for per-step decision log
   VLLM_LDMLOAD_KMAX   max draft length (default 8)
   VLLM_LDMLOAD_WINDOW acceptance-history window W (default 8)
+  VLLM_LDMLOAD_FORCE0 diagnostic: force k*=0 for every request (measures the SD-off floor on a
+                      spec-enabled server; NOT part of the H-4.6 arm — used to decompose the gap)
 """
 import json
 import math
@@ -90,14 +106,14 @@ def _install():
 
     KMAX = int(os.environ.get("VLLM_LDMLOAD_KMAX", "8"))
     W = int(os.environ.get("VLLM_LDMLOAD_WINDOW", "8"))
+    FORCE0 = os.environ.get("VLLM_LDMLOAD_FORCE0") == "1"
     S_P = _load_profile(os.environ.get("VLLM_LDMLOAD_PROFILE"))
     if not S_P:
         print(f"[ldmload] WARNING: profile missing/incomplete — controller will run with flat 30 SPS", flush=True)
 
     state = defaultdict(lambda: deque(maxlen=W))   # req -> accepted-token history (DRAFTED steps only)
     khist = {}                                      # req -> FROZEN acceptance history (persists after drafting stops)
-    d_live = {}                                     # req -> actual scheduled draft tokens THIS step
-    d_seen = set()                                  # reqs that were drafted this step (d_live valid for them)
+    step_d = {}                                     # req -> ACTUAL scheduled draft tokens THIS step (cleared each step)
     last_kstar = {}                                 # req -> last decided k* (PERSISTENT; survives zero-draft steps)
     a_bar = [0.0]                                   # type: ignore[list-item]  EMA of mean acc/req-step over DRAFTED requests
     A_TAU = 0.95                                    # EMA decay (per step)
@@ -135,21 +151,13 @@ def _install():
     def _hooked_stats(self, spec_decoding_stats, num_draft_tokens,
                       num_accepted_tokens, num_invalid_spec_tokens, request_id):
         try:
-            _hooked_stats._calls = getattr(_hooked_stats, "_calls", 0) + 1
-            if _hooked_stats._calls % 500 == 1:
-                print(f"[ldmload][dbg-stats] call#{_hooked_stats._calls} req={request_id[-8:]} "
-                      f"drafts={num_draft_tokens} acc={num_accepted_tokens}", flush=True)
             hist = state[request_id]
             hist.append(num_accepted_tokens)
             khist[request_id] = list(hist)          # FROZEN snapshot (persists after drafting stops)
             n_obs[0] += 1
             for l in range(1, KMAX + 1):
                 global_J[l] = ((n_obs[0] - 1) * global_J[l] + (1 if num_accepted_tokens >= l else 0)) / n_obs[0]
-            d_live[request_id] = int(num_draft_tokens or 0)   # ACTUAL scheduled drafts this step
-            if int(num_draft_tokens or 0) > 0:
-                d_seen.add(request_id)                        # drafted THIS step (d_live valid)
-            self._ll_pending = getattr(self, "_ll_pending", {})
-            self._ll_pending[request_id] = (num_draft_tokens,)
+            step_d[request_id] = int(num_draft_tokens or 0)   # ACTUAL scheduled drafts THIS step
         except Exception:
             pass
         return _orig_stats(self, spec_decoding_stats, num_draft_tokens,
@@ -158,76 +166,46 @@ def _install():
     def _hooked_out(self, scheduler_output, model_output):
         res = _orig_out(self, scheduler_output, model_output)
         try:
-            pend = getattr(self, "_ll_pending", None) or {}
-            N = len(self.running) or (len(pend) if pend else 0)
-            # B_live = running requests + scheduled speculative tokens this step — the signal the
-            # H-4.6 pre-registration SPECIFIED. MECHANICAL FIX (rev-#4c, rule unchanged): rev-#4b read
-            # total_num_scheduled_tokens, which provably EXCLUDES the spec drafts (they ride separately
-            # in scheduled_spec_decode_tokens; verified against vLLM source + empirically: at C=96 it
-            # read ~102 while the batch actually verified ~708 tok/step). The controller was therefore
-            # blind to the draft load that creates saturation and oscillated (meanK 0<->3.6) instead of
-            # committing to SD-off.
-            # REV-#4c FIX #2 (also mechanical, found by smoke test): the drafts MUST be counted from
-            # THIS step's make_spec_decoding_stats calls (self._ll_pending), not from
-            # scheduler_output.scheduled_spec_decode_tokens — that field is already consumed/cleared
-            # before update_from_output runs (smoke read: mean 3.05 vs true ~611 tok/step). And d_live
-            # must only be trusted for requests actually drafted THIS step (d_seen); stale entries from
-            # earlier steps made B_live and the per-request delta wrong for k*=0 requests.
-            live = {r: int(v[0]) for r, v in pend.items() if int(v[0] or 0) > 0}
-            spec_drafts = sum(live.values())
-            B_live = float(N + spec_drafts)
-            # INSTRUMENTATION (temporary): log the raw pending/live draft counts at decision time.
-            _hooked_out._n = getattr(_hooked_out, "_n", 0) + 1
-            if _hooked_out._n % 300 == 1:
-                print(f"[ldmload][dbg] N={N} pend_n={len(pend)} live_n={len(live)} "
-                      f"spec_drafts={spec_drafts} B_live={B_live:.0f} "
-                      f"pend_sample={list(pend.items())[:3]}", flush=True)
+            N = len(self.running) or (len(step_d) if step_d else 0)
+            # B_live = total scheduled tokens this step. Verified (source + live instrumentation on
+            # vLLM 0.19.1) that total_num_scheduled_tokens INCLUDES the scheduled spec drafts
+            # (N=96 with 8 drafts -> total_sched=104), so it is exactly the pre-registered signal
+            # "running requests + scheduled speculative tokens". Fallback: N + this-step drafts.
+            tns = int(getattr(scheduler_output, "total_num_scheduled_tokens", 0) or 0)
+            B_live = float(tns if tns > 0 else N + sum(step_d.values()))
             # batch mean accepted/request-step (measured) over DRAFTED requests only,
             # INCLUDING the +1 bonus token each drafted request emits every step:
             #   a_bar = (sum acc + n_drafted) / n_drafted
             # (Zero-draft steps never reach make_spec_decoding_stats, so they cannot poison this.)
-            if live:
-                step_acc = (sum(state[r][-1] for r in live) + len(live)) / len(live)
+            drafted = [r for r, d in step_d.items() if d > 0]
+            if drafted:
+                step_acc = (sum(state[r][-1] for r in drafted) + len(drafted)) / len(drafted)
                 a_bar[0] = step_acc if a_bar[0] == 0.0 else A_TAU * a_bar[0] + (1 - A_TAU) * step_acc
-            # ENFORCEMENT FIX (rev-#4, mechanical): decide for EVERY running request each step,
-            # not just drafted ones. Previously k*=0 requests stopped being drafted, vanished from
-            # the per-step decision map, and their next drafts fell back to the cold-start default
-            # (kstar=4) — so "SD-off" was never actually enforced (measured: 415 draft tok/s at C=96
-            # despite 99.6% k*=0 decisions). Decisions now persist in last_kstar; requests without a
-            # live drafted history use their FROZEN acceptance history (khist), so a request frozen
-            # at k*=0 stays at k*=0 unless the LIVE load regime makes speculation profitable again.
+            # ENFORCEMENT FIX (rev-#4c, mechanical): decide for EVERY running request each step;
+            # decisions persist in last_kstar so k*=0 stays k*=0 across zero-draft steps. Requests
+            # without a live drafted history use their FROZEN acceptance history (khist).
             decs = []
             for req in list(self.running):
                 r = req.request_id
-                d_r = live.get(r, 0)   # actual drafts verified this step (from THIS step's stats calls)
+                d_r = step_d.get(r, 0)   # this-step drafts only (step_d is cleared at end of step)
                 hist = state[r] if (r in state and state[r]) else khist.get(r)
-                if not hist:
-                    # Cold start (revised within rev-#4, mechanical): KMAX, not 4. A ceiling of 4
-                    # makes k*=8 UNREACHABLE — the controller can never observe acceptance at
-                    # positions >4, so its J estimate is capped and it can never choose k>4, which
-                    # cannot meet the pre-registered C=8 success bar (K8 = +10.3% vs AR; K4 = +5.5%).
+                if FORCE0:
+                    ks = 0
+                elif not hist:
+                    # Cold start (rev-#4c, mechanical): KMAX, not 4. A ceiling of 4 makes k*=8
+                    # UNREACHABLE — the controller can never observe acceptance at positions >4.
                     # An optimistic KMAX start lets each request observe deep acceptance once before
-                    # the regime term takes over (same rationale as the Phase 4.5 LDM cold-start fix:
-                    # a pessimistic start is self-fulfilling). The transient cost at saturation is
-                    # bounded to the first ~150 steps of each cell.
+                    # the regime term takes over (same rationale as the Phase 4.5 LDM cold-start fix).
                     ks = KMAX
                 else:
                     ks = _decide(_Jvec(list(hist)), N, B_live, d_r, a_bar[0] or 0.0)
                 last_kstar[r] = ks
-                # DEBUG: catch any request that gets k*>4 while d_r==0 (the "stuck" class) — log inputs.
-                if ks > 4 and d_r == 0 and getattr(_hooked_out, "_dbg", 0) < 5:
-                    _hooked_out._dbg = getattr(_hooked_out, "_dbg", 0) + 1
-                    hv = list(hist)
-                    Jv = [sum(1 for x in hv if x >= l) / len(hv) for l in range(1, KMAX + 1)]
-                    print(f"[ldmload][dbg-stuck] req={r[-8:]} N={N} B_live={B_live:.1f} a_bar={a_bar[0]:.2f} "
-                          f"hist={hv} J=[{Jv[0]:.2f},{Jv[3]:.2f},{Jv[7]:.2f}] -> ks={ks}", flush=True)
-                decs.append({"req": r, "Kobs": min(pend.get(r, (d_r,))[0], KMAX), "d": d_r, "kstar": ks})
+                decs.append({"req": r, "Kobs": min(step_d.get(r, 0), KMAX), "d": d_r, "kstar": ks})
             self._ll_kstar = dict(last_kstar)
             _fh.write(json.dumps({"t": round(time.monotonic(), 4), "N": N,
                                   "B_live": round(B_live, 1), "a_bar": round(a_bar[0] or 0.0, 3),
                                   "decisions": decs}) + "\n")
-            self._ll_pending = {}
-            d_seen.clear()
+            step_d.clear()
         except Exception:
             pass
         return res
@@ -238,7 +216,7 @@ def _install():
             ks = getattr(self, "_ll_kstar", None)
             n_found = n_trunc = n_skip = 0
             for req_id in getattr(draft_token_ids, "req_ids", ()):
-                kstar = ks.get(req_id, 4) if ks else 4
+                kstar = ks.get(req_id, KMAX) if ks else KMAX
                 request = self.requests.get(req_id)
                 if request is None:
                     n_skip += 1
@@ -268,7 +246,7 @@ def _install():
     Scheduler.make_spec_decoding_stats = _hooked_stats
     Scheduler.update_from_output = _hooked_out
     Scheduler.update_draft_token_ids = _hooked_drafts
-    print(f"[ldmload] live-load-aware LDM active (rev #4, unified SPS curve; KMAX={KMAX} W={W} "
+    print(f"[ldmload] live-load-aware LDM active (rev #4c; KMAX={KMAX} W={W} force0={FORCE0} "
           f"profile={'yes' if S_P else 'NO'}) -> {OUT}", flush=True)
 
 
