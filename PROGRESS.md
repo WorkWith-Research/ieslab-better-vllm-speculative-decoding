@@ -651,4 +651,35 @@ Full results in `docs/phase4-p44-results.md`. Headline numbers (steady-state agg
   with class membership NOT a useful feature for K selection here. The per-class TPOT harm remains a real
   SLO-relevant effect.
 
-**Phase 4 status: 4.1✓ 4.2✓ 4.3✓ 4.4✓ 4.5✓; 4.6 rev-#4 running (9 cells on both GPUs).**
+### 2026-10-08 — COMPLETE — Phase 4.6 live-load-aware adaptive speculation: **H-4.6 FALSIFIED as specified** (C=8 PASS, C=96 FAIL)
+Full results in `docs/phase4-p6-results.md`. rev-#4c grid complete (9 cells + force-0 diagnostics; enforcement
+verified from decision logs: 99.5% of k*=0 decisions show zero scheduled drafts). Server-side generation rate
+(steady t≥20s — the client metric is open-loop biased, see results doc):
+
+| arm | C=8 (vs AR) | C=32 (vs AR) | C=96 (vs AR) |
+|---|---|---|---|
+| AR | 387.0 | 1460.0 | 2557.2 |
+| K8 (best fixed) | 430 (+11.1%) | 1437 (−1.6%) | 1937 (−24.3%) |
+| LDM (P4.5) | — | 1398 (−4.2%) | 1953 (−23.6%) |
+| DSpark-rule (P4.5) | — | 1416 (−3.0%) | 1858 (−27.3%) |
+| **ldm_load** | **417.0 (+7.8%) PASS** | **1304.2 (−10.7%)** | **2235.2 (−12.6%) FAIL** (bound ≈ AR−0.3%) |
+| ldm_load force-0 (SD-off floor) | 354.4 (−8.4%) | 1336.9 (−8.5%) | 2437.6 (−4.7%) |
+
+- **C=8 PASS** (+7.8% ≥ +5% bound; ~70% of K8's gain, without knowing C). **C=96 FAIL**: −12.6% vs the AR−noise
+  bound; it does beat DSpark-rule by +20.2 pts (second clause passes) but the first fails → FALSIFIED as
+  pre-registered, no retuning (charter §13).
+- **The load signal WORKS; per-request greedy ALLOCATION does not.** At C=96 ldm_load puts 80% of requests at K=0
+  (it recognizes saturation) but a ~20% minority stays permanently at K=8 and the batch oscillates (meanK* 0↔5.4,
+  bimodal k* distribution). Each request's argmax prices its own accepted tokens against SPS(B) but NOT the
+  slowdown its drafts impose on the other N−1 requests — a negative externality that grows with B. The force-0
+  diagnostic proves the saturation optimum IS full SD-off (2437.6 > 2235.2), yet no per-request decision rule
+  reaches it. DSpark-rule fails the same way (broad K dist, −27.3%); acceptance-only LDM worse (−23.6%).
+- **The spec path has a fixed overhead no K-only controller can remove:** force-0 = −4.7% vs AR at C=96 even with
+  zero drafts. So "ldm_load ≥ AR − noise" was structurally unreachable for any K∈{0..8} controller; closing the
+  last ~5 pts requires disabling the spec path itself — a scheduler-level action.
+- **Phase 5 is now motivated by measurement, not speculation:** the remaining saturation gap decomposes into
+  ~8 pts of allocation loss (per-request greedy vs SD-off optimum) + ~4.7 pts fixed spec-path overhead → both
+  point to batch-level K allocation with externality pricing and/or dynamic enable/disable of the spec path.
+
+**Phase 4 status: 4.1✓ 4.2✓ 4.3✓ 4.4✓ 4.5✓ 4.6✓ (H-4.6 FALSIFIED, mechanism characterized). Phase 5 NOT STARTED
+(reserved for speculation-aware scheduler design/implementation).**
