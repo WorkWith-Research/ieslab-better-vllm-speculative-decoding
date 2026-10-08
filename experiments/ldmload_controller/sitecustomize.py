@@ -135,6 +135,10 @@ def _install():
     def _hooked_stats(self, spec_decoding_stats, num_draft_tokens,
                       num_accepted_tokens, num_invalid_spec_tokens, request_id):
         try:
+            _hooked_stats._calls = getattr(_hooked_stats, "_calls", 0) + 1
+            if _hooked_stats._calls % 500 == 1:
+                print(f"[ldmload][dbg-stats] call#{_hooked_stats._calls} req={request_id[-8:]} "
+                      f"drafts={num_draft_tokens} acc={num_accepted_tokens}", flush=True)
             hist = state[request_id]
             hist.append(num_accepted_tokens)
             khist[request_id] = list(hist)          # FROZEN snapshot (persists after drafting stops)
@@ -172,6 +176,12 @@ def _install():
             live = {r: int(v[0]) for r, v in pend.items() if int(v[0] or 0) > 0}
             spec_drafts = sum(live.values())
             B_live = float(N + spec_drafts)
+            # INSTRUMENTATION (temporary): log the raw pending/live draft counts at decision time.
+            _hooked_out._n = getattr(_hooked_out, "_n", 0) + 1
+            if _hooked_out._n % 300 == 1:
+                print(f"[ldmload][dbg] N={N} pend_n={len(pend)} live_n={len(live)} "
+                      f"spec_drafts={spec_drafts} B_live={B_live:.0f} "
+                      f"pend_sample={list(pend.items())[:3]}", flush=True)
             # batch mean accepted/request-step (measured) over DRAFTED requests only,
             # INCLUDING the +1 bonus token each drafted request emits every step:
             #   a_bar = (sum acc + n_drafted) / n_drafted
