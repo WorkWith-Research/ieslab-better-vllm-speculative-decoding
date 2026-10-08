@@ -110,14 +110,14 @@ If attempt 2 produces an importable vllm, the next gates are: load `dspark_qwen3
 confirm the **real DSpark checkpoint drafts** (not an ngram fallback), and observe scheduling/correctness.
 Adaptive verification remains out of scope on this hardware regardless of build success — it is Gate A.
 
-## 3. Milestone status (kept distinct, per addendum §4)
+## 3. Milestone status (kept distinct, per addendum §4) — FINAL (2026-10-09)
 
 | Milestone | Status on our hardware |
 |---|---|
-| Source support exists (upstream) | **Yes** — PR #47808 merged 2026-08-12; drafter in v0.25.0+, adaptive verification in v0.28.0+. |
-| Model loads locally | **Pending** — blocked on a cu12-compatible build (attempt 2 in progress). Checkpoints are public and sized to fit a 3090. |
-| Adaptive verification active locally | **No — definitive blocker.** Requires varlen decode CUDA graphs (FA3/SM90 or FlashInfer trtllm-gen/SM100); SM86 is rejected at startup. Not fixable without new hardware. |
-| Serving benchmark completed | **Not started** — gated on the above. |
+| Source support exists (upstream) | **Yes** — PR #47808 merged 2026-08-12; drafter in v0.25.0 (2026-07-11)+, adaptive verification in v0.28.0 (2026-08-26)+. |
+| Model loads locally | **Yes** — Qwen3-4B + `dspark_qwen3_4b_block7` on SM86 via cu126 source build (isolated worktree). Gate A+B PASS: `Resolved architecture: Qwen3DSparkModel`, dspark CUDA graphs captured 45/45, real drafts with learned acceptance decay (no ngram fallback). |
+| Adaptive verification active locally | **No — definitive blocker.** v0.25.0 explicitly skips the confidence head ("not wired into inference yet"); the adaptive path ships in v0.28+ which needs cu13 (driver caps at 12.9), AND varlen decode CUDA graphs need FA3/SM90 or FlashInfer trtllm-gen/SM100 (SM86 rejected at startup). |
+| Serving benchmark completed | **Yes** — Gate E: native fixed-K=7 DSpark vs AR on Qwen3-4B, C∈{8,32,64}: +61.5% / +12.2% / −4.5%. Full table + raw results: `docs/dspark-native-results.md`. |
 
 These are not interchangeable: "source support exists" (true) does not imply "adaptive verification is
 active locally" (false here). An authors' offline DeepSpec evaluation could still validate the drafter's
@@ -138,19 +138,13 @@ draft quality, but it is **not** a substitute for a native continuous-batching s
    and its differentiator (live serving-state inputs; cheap-drafter SD-off economics) must be tested on a
    matched target/drafter/runtime — not inferred from the buggy ngram proxy.
 
-## 5. Next steps (smallest falsifiable experiment)
+## 5. Next steps (smallest falsifiable experiment) — UPDATED after Gate A–E completed (2026-10-09)
 
-Once attempt 2 yields an importable vllm (or is declared blocked after this bounded effort):
-- **If build succeeds:** run fixed-K DSpark on `Qwen3-4B` + `dspark_qwen3_4b_block7` at a few loads,
-  matched AR baseline same target/runtime, server-side generation metric. This gives a *native* (if not
-  adaptive) serving baseline to replace the proxy in Track B. Adaptive verification is documented as an
-  SM86 blocker; we do not force it onto a slow path and present that as its performance.
-- **If build fails after this attempt:** record the exact blocker (cu13-only wheels + no cu12 source
-  compatibility on driver ≤12.9), and the contribution narrative rests on (a) the corrected proxy
-  rerun (P4.5R) for the ngram stack, and (b) native adaptive verification as a *reported-but-not-run*
-  baseline with the SM86 limitation stated — not as a measured comparison.
-
-The smallest experiment that could falsify our remaining claim: on a matched Qwen3/DSpark runtime, show
-that a live-serving-state decision beats **native fixed-K DSpark** (the strongest runnable native
-baseline) at saturation by more than trial noise. If it cannot, the contribution narrows to what native
-adaptive verification does not cover (cheap-drafter SD-off / prefill-chunk co-allocation).
+Gate A–E were executed on the cu126 source build (`docs/dspark-native-results.md`). The strongest *runnable*
+native baseline is fixed-K=7 DSpark, which already wins at low load and loses at C=64 (−4.5% vs AR). The
+smallest experiment that could falsify our remaining claim: on this matched Qwen3-4B / dspark runtime, show
+that a live-serving-state K decision (including SD-off) beats **native fixed-K DSpark** at/above the crossover
+(C≈32–64) by more than trial noise — e.g. by tracking the measured load regime and committing to smaller K or
+SD-off where fixed K=7 pays verification cost for a 0.25 acceptance rate. If it cannot, the contribution narrows
+to what native DSpark (adaptive, on capable hardware) does not cover: cheap-drafter SD-off economics and
+prefill-chunk co-allocation under mixed workloads.

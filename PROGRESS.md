@@ -861,5 +861,42 @@ fixed-K DSpark (adaptive verification documented as SM86 blocker) → smallest m
 answer the 7 synthesis questions. Standing instructions: this entry + docs will be pushed at a safe checkpoint and
 tracked in GitHub Project / Discussion.
 
+### 2026-10-09 (cont.) — Native DSpark Gates A–E COMPLETE + synthesis (audit closed)
+The isolated source build succeeded (`vllm-0.25.0+cu126`, CUDA 12.6 + GCC 13 via micromamba; post-build dep repair:
+torchvision/torchaudio/torchcodec cu129 wheels). All five gates executed on Qwen3-4B + `dspark_qwen3_4b_block7`
+(2.6 GB, public; block_size=7 kept as-is) on GPU1, port 8300/8301:
+
+- **Gate A (config): PASS** — `Resolved architecture: Qwen3DSparkModel`, engine config `method='dspark', num_spec_tokens=7`.
+- **Gate B (drafter): PASS** — dspark CUDA graphs captured 45/45; real drafts with learned acceptance decay
+  (14→9→9→3→1→1 per position); full run: 98,413 draft / 24,994 accepted tokens (≈0.25 rate on ShareGPT text). No ngram fallback.
+- **Gate C (adaptive verification): NOT ACTIVE in v0.25.0** — `qwen3_dspark.py:173`: "confidence_head is not wired into
+  inference yet; skip its weights". Adaptive path ships v0.28+ (needs cu13) AND needs varlen decode CG (SM90/SM100).
+  Definitive, source-verified blocker on our stack.
+- **Gate D (scheduling/correctness): PASS** — 16 concurrent heterogeneous requests, coherent output, causally aligned
+  per-position acceptance under load.
+- **Gate E (stable serving + smallest matched comparison): COMPLETE.** Same target/runtime/GPU/workload (ShareGPT,
+  greedy, 60 prompts), C∈{8,32,64}:
+
+| C | AR tok/s | DSpark(K=7) tok/s | Δ vs AR | TPOT ms (AR→DSpark) | TTFT ms (AR→DSpark) |
+|---|---|---|---|---|---|
+| 8 | 463.2 | **757.9** | **+61.5%** | 13.4 → 8.9 | 105 → 136 |
+| 32 | 995.0 | **1116.1** | **+12.2%** | 15.3 → 20.7 | 133 → 184 |
+| 64 | **1134.0** | 1082.6 | **−4.5%** | 16.9 → 30.2 | 228 → 418 |
+
+Native fixed-K DSpark reproduces the load-dependent K effect with a learned drafter: wins at low load, net-negative
+at C=64 (crossover between 32 and 64 on Qwen3-4B/3090 — later than Qwen2.5-7B's, as expected for a smaller model).
+Raw results + server logs archived in `results/gate_e_native_dspark/`.
+
+**Synthesis (7 addendum questions answered):** `docs/dspark-audit-synthesis.md`. Headlines: proxy was legitimate at
+design time (0.19.1 predates v0.25.0) but the "no integration" claim is dated-corrected; our batch-argmax + prefill
+pricing assumptions were CORRECT (upstream matches); "novel by itself" claims are retired; the proxy's Phase 4.5
+DSpark-rule numbers stand only as a statement about our buggy implementation (F1/F4). **Remaining measured problem:**
+fixed-K DSpark's saturation loss (−4.5% at C=64) + prefill-heavy mixes (not yet tested natively). **Smallest
+falsification experiment (next, Track B):** live-serving-state K/SD-off controller vs native fixed-K DSpark on this
+matched runtime, 3 trials/cell — must beat fixed-K=7 by > noise at C=64 without losing the C=8 gain.
+
+**Audit status: COMPLETE.** Phase 5.2 (scheduler expansion) remains deprioritized per addendum; next work = P4.5R
+(Track A, deferred) and the Track B pre-registration above.
+
 
 
