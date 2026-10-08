@@ -65,33 +65,26 @@ faster than `(1+mean_l[k])` grows, so k=0 wins.
 spec-enabled server is itself ~8% below AR. Phase 4.6 already showed this floor is structurally unreachable by
 any K-only controller; H-5.1's answer was to make the off-state free by skipping the draft pass. It didn't.
 
-**Gap 2 — the draft-pass skip costs, instead of removing overhead.** The force-off diagnostic (skip every step,
-0 drafts) measured **2355.2**, which is **3.2% BELOW** the no-skip floor (2431.9, spec path enabled, k\*=0 for
-all). Both runs: identical KV cache (117,264 tokens), 0 OOM, err=0, clean decision logs. Skipping a supposedly
-pure-overhead GPU kernel made throughput *worse*.
-
-Candidate explanations (under investigation via same-GPU interleaved A/B):
-1. **Controller CPU overhead on the critical path.** `ldm_batch`'s per-step hook computes the full batch
-   decision (96 reqs × J-lookups + cum_sums + 9 SPS evals) every step even when OFF; the leaner P4.6 FORCE0
-   path short-circuits before that work. At C=96 the engine step is ~13ms, so a few ms of Python in the hook
-   is a measurable fraction. If this explains most of the gap, the skip mechanism itself may still be net-
-   positive and H-5.1's falsification is partly mechanical (hook cost, not decision quality).
-2. **The skip path changes vLLM internals in a costly way** (stale `_draft_token_req_ids` handling, event-sync
-   behavior differences) — i.e., "removing" the draft pass isn't equivalent to "never having had spec enabled".
+**Gap 2 — the draft-pass skip does NOT remove the floor (A/B-confirmed).** The force-off diagnostic (skip every
+step, 0 drafts) measured **2351±5** (3 runs: 2354.3, 2355.2, 2344.7) vs the no-skip floor (spec path enabled,
+k\*=0 for all) **2398±43** (3 runs: 2431.9, 2416.6, 2346.4; one P4.6 run drifted low mid-day). Same GPU, same day,
+identical KV cache (117,264 tokens), 0 OOM, err=0 in every run. The skip costs ~0–2% (within the no-skip arm's
+own spread) and recovers NONE of the ~9% floor gap to AR. Conclusion: the Phase 4.6 "fixed spec-path overhead"
+does NOT live in the ngram draft kernel — skipping it at runtime neither helps nor meaningfully hurts, so the
+floor must sit in the rest of the spec-enabled serving path (scheduler bookkeeping, rejection-sampler setup,
+input-batch spec fields) that stays active whenever `speculative_config` is set.
 
 ## Interpretation for Phase 5
 
 - The **decision rule is validated**: batch-level argmax prices the externality and commits to SD-off at
   saturation where per-request greedy oscillated. This is a real, reusable result (the mechanism works; the
   cost model it acts on was wrong).
-- The **cost model was wrong in two ways**: (a) "SD-off" has a ~8% fixed cost on a spec-enabled server that no
-  K-allocation can avoid; (b) the draft pass is not pure overhead — skipping it at runtime costs ~3% more than
-  leaving it running with zero drafts. The ~4.7% force-0 floor from Phase 4.6 therefore does NOT decompose as
-  "draft-pass cost"; it lives elsewhere in the spec-enabled serving path (scheduler bookkeeping, rejection
-  sampler setup, input-batch spec fields) and cannot be removed by skipping the draft kernel.
-- Next step: same-GPU interleaved A/B (P4.6-force-0 vs ldm_batch-force-off) to attribute the 3.2% gap between
-  controller CPU cost and skip mechanics; then decide whether Phase 5 continues with a different mechanism
-  (e.g., removing spec-path bookkeeping, or admitting requests without the spec path at all).
+- The **cost model was wrong in one way that matters**: "SD-off" has a ~9% fixed cost on a spec-enabled server
+  that no K-allocation and no draft-pass skip can avoid. The lever must be upstream of the serving path —
+  e.g., admitting/serving requests through a genuinely spec-free code path, or removing the spec-path
+  bookkeeping itself — not in the drafter kernel.
+- Next step: Phase 5.2 pre-registration around a spec-path-free off-state (or its measured cost), informed by
+  profiling WHERE the ~9% floor lives (scheduler vs model-runner spec fields) before committing to a mechanism.
 
 ## Files
 - Controller: `experiments/ldm_batch_controller/sitecustomize.py` (M1/M2/M3)

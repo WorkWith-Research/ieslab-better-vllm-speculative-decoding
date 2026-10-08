@@ -805,15 +805,15 @@ by 0.4%); mechanism-cost force-off ≥AR−1% → FAIL (2355.2). Per §13: no re
    `make_spec_decoding_stats` so acceptance never populates at C=96), the externality-priced argmax commits the
    whole batch to SD-off at saturation — exactly what per-request greedy could not do (it oscillated with a ~20%
    K=8 minority). The mechanism is validated; it simply acts on a cost model that under-prices "SD-off".
-2. **The draft-pass skip COSTS ~3.2% instead of removing overhead.** force-off (skip, 0 drafts) = 2355.2 vs the
-   no-skip floor (spec ON, k*=0) = 2431.9 — identical KV cache (117,264 tok), 0 OOM, err=0. The Phase 4.6 "fixed
-   spec-path overhead" (~4.7–8%) therefore does NOT live in the ngram draft kernel; skipping it at runtime is
-   strictly worse than leaving it running with zero drafts. Candidate causes (A/B in progress): (a) ldm_batch's
-   per-step hook CPU cost on the engine critical path (full batch decision computed even when OFF, vs P4.6 FORCE0
-   short-circuit), (b) the skip path changing vLLM internals (stale req_ids / event sync) in a costly way.
+2. **The draft-pass skip does NOT remove the floor (A/B-confirmed, 3 runs each, same GPU/day).** force-off
+   (skip) = 2351±5 vs no-skip floor (spec ON, k*=0) = 2398±43: the skip is ~neutral (−2%, within the no-skip
+   arm's spread) and recovers NONE of the ~9% gap to AR. The Phase 4.6 "fixed spec-path overhead" therefore does
+   NOT live in the ngram draft kernel; it sits in the rest of the spec-enabled serving path (scheduler
+   bookkeeping, rejection-sampler setup, input-batch spec fields) that stays active whenever `speculative_config`
+   is set. Identical KV cache (117,264 tok), 0 OOM, err=0 in all runs.
 
-**Phase 5 status: H-5.1 FALSIFIED (mechanism validated, cost model wrong). Next:** same-GPU interleaved A/B to
-attribute the 3.2% skip gap (controller CPU vs skip mechanics); then choose the next Phase 5 mechanism — the
-SD-off floor lives in spec-path bookkeeping, not the draft kernel, so the lever must be upstream of it.
+**Phase 5 status: H-5.1 FALSIFIED (mechanism validated, cost model wrong). Next:** Phase 5.2 — profile WHERE the
+~9% SD-off floor lives (scheduler vs model-runner spec fields) and pre-register a mechanism that removes it
+upstream (spec-path-free off-state), since no K-allocation or drafter-kernel skip can.
 
 
