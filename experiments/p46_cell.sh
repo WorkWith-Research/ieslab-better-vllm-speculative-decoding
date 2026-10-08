@@ -23,7 +23,17 @@ for i in $(seq 1 60); do
   if curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/health" | grep -q 200; then up=1; break; fi
   sleep 5
 done
-[ "$up" = "1" ] || { echo "SERVER FAILED $tag"; kill $(cat "results/$tag/server.pid") 2>/dev/null; exit 1; }
+[ "$up" = "1" ] || { echo "SERVER FAILED $tag"; ./experiments/kill_server.sh "results/$tag/server.pid" "$PORT"; exit 1; }
+# HARDENING (post-Phase4.4 port-collision incident): the health endpoint can be answered by an
+# ORPHANED server still holding the port while THIS cell's server died at bind time. Verify our
+# pid is alive and OUR log shows startup completion — otherwise abort the cell as INVALID.
+SPID_SERVER=$(cat "results/$tag/server.pid")
+sv_ok=0
+for i in $(seq 1 24); do
+  if kill -0 "$SPID_SERVER" 2>/dev/null && grep -qa "Application startup complete" "logs/$tag.server.log"; then sv_ok=1; break; fi
+  sleep 5
+done
+[ "$sv_ok" = "1" ] || { echo "SERVER NOT OURS/NOT UP $tag (pid $SPID_SERVER) — aborting cell as INVALID"; ./experiments/kill_server.sh "results/$tag/server.pid" "$PORT"; exit 1; }
 act=0
 for i in $(seq 1 24); do
   if grep -qaE "\[ldmload\] .* active" "logs/$tag.server.log"; then act=1; break; fi
@@ -40,6 +50,5 @@ SPID=$!
 
 kill $SPID 2>/dev/null; wait $SPID 2>/dev/null
 sleep 3
-kill $(cat "results/$tag/server.pid") 2>/dev/null; wait 2>/dev/null
-sleep 5
+./experiments/kill_server.sh "results/$tag/server.pid" "$PORT"
 echo "=== $tag done ==="

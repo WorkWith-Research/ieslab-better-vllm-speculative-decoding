@@ -1,16 +1,28 @@
 """In-loop LIVE-LOAD-AWARE LDM (Phase 4.6, pre-registered in PROGRESS.md — Priority B).
 
-Decision rule (revision #3, fixed before any run; supersedes revision #2's uniform-batch delta):
+Decision rule (revision #4, fixed before any run; supersedes revision #3's two-regime SPS model):
 per request r, each decode step:
     N        = number of running requests this step          (measured)
     B_live   = total scheduled tokens this step              (measured; includes drafts + prefills)
     d_r      = actual draft tokens scheduled for r this step (measured; ngram often < K)
     a_bar    = EMA of batch mean accepted tokens / request-step (measured from per-request stats)
-    k*_r     = argmax_{k in 0..KMAX}  [(N-1)*(1+a_bar) + 1 + sum_{l<=k} J_r[l]] * SPS_path(B_live + (k - d_r))
-where J_r[l] = P(acc >= l) over r's last W observed steps (causal), and SPS_path is the static
-profile fitted to Phase-4.6 measured points (AR path for k=0, SD path for k>0). The delta uses
-d_r (ACTUAL scheduled drafts, not the instructed K) because ngram self-drafting produces far fewer
-drafts than K on most steps — revision #2's (k-k_cur)*N term was mechanically wrong for that reason.
+    k*_r     = argmax_{k in 0..KMAX}  [(N-1)*(1+a_bar) + 1 + sum_{l<=k} J_r[l]] * SPS(B_live + (k - d_r))
+where J_r[l] = P(acc >= l) over r's last W observed steps (causal), and SPS is ONE static curve
+fitted to ALL Phase-4.6 measured profile points (AR and SD cells together).
+
+WHY UNIFIED (revision #3 -> #4, evidence-motivated per charter §13): revision #3 fitted separate
+curves for "AR path" (k=0) and "SD path" (k>0). Offline reconstruction of the rev-#3 value function
+from its OWN logged live state showed this double-penalized speculation: the SD profile points carry
+a small fixed per-step overhead of the spec-decode code path on top of their (larger) B, so at equal
+B the "SD curve" sat below the "AR curve" by 10-86% — an artifact of how the profile cells were
+constructed (uniform-K), not a separate cost regime. In vLLM's continuous batch, a k=0 request and a
+speculating request ride the SAME forward pass; step time is set by TOTAL scheduled tokens B. The
+spec-decode-path overhead is constant across all k choices (the server always runs with spec decode
+enabled), so it cancels in argmax over k. With one curve, the policy picks k*=8 at the logged C=8
+live state and k*=0 at the logged C=32 live state — matching Phase 4.2 ground truth (K8 best at C=8;
+AR≈K8 neutral at C=32) using only measured serving state. The delta uses d_r (ACTUAL scheduled
+drafts, not the instructed K) because ngram self-drafting produces far fewer drafts than K on most
+steps — revision #2's (k-k_cur)*N term was mechanically wrong for that reason.
 NO concurrency label C appears anywhere — only measured (N, B_live, d_r, a_bar) + profile.
 
 Mechanics: server runs with SPEC_METHOD=ngram K=KMAX; this controller truncates each request's
@@ -57,15 +69,14 @@ def _sps(p, B):
 
 
 def _load_profile(path):
-    ar, sd = [], []
+    """Load ALL measured profile points (AR + SD cells) into ONE SPS(B) curve."""
+    pts = []
     if path and os.path.exists(path):
         for line in open(path):
             r = json.loads(line)
             if r.get("B") and r.get("SPS"):
-                (ar if r.get("path") == "AR" else sd).append((r["B"], r["SPS"]))
-    ar_p = _fit_curve(sorted(ar)) if len(ar) >= 3 else None
-    sd_p = _fit_curve(sorted(sd)) if len(sd) >= 3 else None
-    return ar_p, sd_p
+                pts.append((r["B"], r["SPS"]))
+    return _fit_curve(sorted(set(pts))) if len(pts) >= 3 else None
 
 
 def _install():
@@ -79,10 +90,9 @@ def _install():
 
     KMAX = int(os.environ.get("VLLM_LDMLOAD_KMAX", "8"))
     W = int(os.environ.get("VLLM_LDMLOAD_WINDOW", "8"))
-    AR_P, SD_P = _load_profile(os.environ.get("VLLM_LDMLOAD_PROFILE"))
-    if not (AR_P and SD_P):
-        print(f"[ldmload] WARNING: profile incomplete (ar={bool(AR_P)} sd={bool(SD_P)}) — "
-              f"controller will run AR-only-ish", flush=True)
+    S_P = _load_profile(os.environ.get("VLLM_LDMLOAD_PROFILE"))
+    if not S_P:
+        print(f"[ldmload] WARNING: profile missing/incomplete — controller will run with flat 30 SPS", flush=True)
 
     state = defaultdict(lambda: deque(maxlen=W))   # req -> accepted-token history (DRAFTED steps only)
     d_live = {}                                     # req -> actual scheduled draft tokens this step
@@ -103,14 +113,13 @@ def _install():
         return J
 
     def _decide(J, N, B_live, d_r, a_bar_v):
-        # k* = argmax_k [(N-1)*(1+a_bar) + 1 + sum_{l<=k}J[l]] * SPS_path(B_live + (k - d_r))
+        # k* = argmax_k [(N-1)*(1+a_bar) + 1 + sum_{l<=k}J[l]] * SPS(B_live + (k - d_r))
         best, bv = 0, -1.0
         others = (N - 1) * (1.0 + a_bar_v) if N > 1 else 0.0
         for k in range(0, KMAX + 1):
             E = sum(J[1:k + 1])
             B = max(1.0, B_live + (k - d_r))
-            p = AR_P if k == 0 else SD_P
-            s = _sps(p, B) if p else 30.0
+            s = _sps(S_P, B) if S_P else 30.0
             v = (others + 1.0 + E) * s
             if v > bv:
                 bv, best = v, k
@@ -188,8 +197,8 @@ def _install():
     Scheduler.make_spec_decoding_stats = _hooked_stats
     Scheduler.update_from_output = _hooked_out
     Scheduler.update_draft_token_ids = _hooked_drafts
-    print(f"[ldmload] live-load-aware LDM active (KMAX={KMAX} W={W} "
-          f"ar_pts={'yes' if AR_P else 'NO'} sd_pts={'yes' if SD_P else 'NO'}) -> {OUT}", flush=True)
+    print(f"[ldmload] live-load-aware LDM active (rev #4, unified SPS curve; KMAX={KMAX} W={W} "
+          f"profile={'yes' if S_P else 'NO'}) -> {OUT}", flush=True)
 
 
 _install()

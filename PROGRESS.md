@@ -506,19 +506,6 @@ each drafted request emits every step — this drove a self-fulfilling K=0 colla
 results/p4_6/invalid_rev2/ and must not be reused. The SPS profile is extended with SD K=4/8 at C=96
 (B≈110-130) so the cost model covers the saturation regime (initial profile only reached B≈86).
 
-**Cells:** ldm_load × C ∈ {8,32,96} × 3 trials = 9 cells
-**Revision #3 (pre-run, mechanical-flaw fix #2):** revision #2's value model used a uniform-batch delta
-`(k-k_cur)*N` and an `a_bar` computed over ALL pending requests. Two flaws found during smoke testing:
-(1) ngram self-drafting produces far fewer ACTUAL drafts than the instructed K on most steps (measured
-mean d≈2.6/req at C=8), so the batch-size delta must use measured per-request draft count d_r, not k-k_cur;
-(2) `a_bar` (batch mean accepted/request-step) included zero-draft requests and omitted the +1 bonus token
-each drafted request emits every step — this drove a self-fulfilling K=0 collapse in the C=8 smoke test
-(meanK 0.52 where fixed-K8 wins +10.3%). Corrected rule (rev #3): k*_r = argmax_k [(N-1)(1+a_bar) + 1 +
-Σ_{l≤k}J_r[l]] · SPS_path(B_live + (k - d_r)), a_bar over DRAFTED requests only incl. the bonus token.
-**INVALID cells:** 4 ldmload cells run under rev #2 (c8 t0/t1/t2, c32 t0) are quarantined in
-results/p4_6/invalid_rev2/ and must not be reused. The SPS profile is extended with SD K=4/8 at C=96
-(B≈110-130) so the cost model covers the saturation regime (initial profile only reached B≈86).
-
 **Cells:** ldm_load × C ∈ {8,32,96} × 3 trials = 9 cells, mixed workload (Phase 4.2), DUR=150s, eager. Baselines reused:
 AR/K4/K8/LDM/DSpark-rule from Phase 4.2/4.5 (no re-run). GPU1.
 **Success (fixed):** at C=96 ldm_load ≥ AR − noise (noise = max trial spread of AR across trials, ≈0.3%) AND beats DSpark-rule;
@@ -527,3 +514,43 @@ signal as specified does not carry enough information, and we report that (do NO
 **Tuning budget:** ≤2 revisions total for this hypothesis (charter §13); each revision must be logged with rationale.
 **Interpretation guard:** if ldm_load ≈ acceptance-only LDM at C=96 (i.e., the regime term never triggers SD-off), the
 hypothesis is FALSIFIED as specified — a live SPS(B) ratio does not let this controller detect saturation.
+
+### 2026-10-08 — Incident + Revision #4 — Phase 4.6 unified SPS curve; Phase 4.4 port-collision quarantine
+**HARNESS INCIDENT (Phase 4.4, affects 13 cells):** killing orchestrator chains mid-run left ORPHANED `vllm serve`
+processes holding ports 8100/8101 — vLLM 0.19.x spawns APIServer/EngineCore children that survive a bare
+`kill <pid>` (the recorded pid is only the top-level process). Subsequent cells' own servers failed to bind, but
+the health check passed against the orphan, so clients measured the WRONG server. Audit (startup-complete marker in
+the cell's OWN log + PID match) invalidated 13/30 Phase-4.4 cells: all K=2 (6), K=1 c32 t0/t1/t2 + K=1 c96 t0/t1/t2 (6),
+and knone c96 t2 (zero completions). Quarantined in results/p4_4/invalid_portcollision/. The earlier H-4.4a/b analysis
+that used those columns is NOT a valid verdict. Fix: `experiments/kill_server.sh` (kills the whole process tree, waits
+for the port to actually go quiet, SIGKILLs any remaining listener) wired into p44_cell.sh/p46_cell.sh, plus a startup
+verification gate in both runners (abort cell as INVALID if our pid is dead or our log lacks "Application startup
+complete"). All 13 cells re-running with the hardened harness.
+
+**Revision #4 (pre-run, evidence-motivated per charter §13 — final revision for this hypothesis):** rev-#3 ran
+cleanly on c32 t1/t2 and c96 ×3 after the orphan cleanup (archived in results/p4_6/rev3_two_regime/) but collapsed to
+K=0 at ALL loads (meanK≈0.16 even at C=8, where fixed-K8 wins +10.3%). Offline reconstruction of the rev-#3 value
+function from its OWN logged live state found the root cause: the TWO-regime SPS model double-penalized speculation.
+The profile's "SD points" carry a small fixed per-step overhead of the spec-decode code path on top of their (larger) B,
+so at equal B the SD curve sat 10–86% below the AR curve — an artifact of how uniform-K profile cells were constructed,
+not a separate cost regime. In vLLM's continuous batch a k=0 request and a speculating request ride the SAME forward
+pass; step time is set by TOTAL scheduled tokens B, and the spec-path overhead is constant across all k choices (the
+server always runs with spec decode enabled), so it cancels in argmax over k. Rev-#4 rule (only change: SPS_path → ONE
+unified curve fitted to all 19 measured profile points; everything else — measured N, B_live, d_r, drafted-only a_bar,
+causal J_r, cold-start k*=4 — unchanged):
+    k*_r = argmax_{k∈0..8} [(N-1)(1+a_bar) + 1 + Σ_{l≤k}J_r[l]] · SPS(B_live + (k − d_r))
+Desk check on rev-#3's logged live state (no concurrency label anywhere): C=8 → k*=8 (robust to d_r=0..8),
+C=32 → k*=0, C=96 (meanN=92.4, meanB_live=120.2) → k*=0 — matching Phase 4.2 ground truth at all three regimes.
+**INVALID cells:** rev-#3 c8 ×3 + c32 t0 were run while an orphan held port 8100 (quarantined in
+results/p4_6/invalid_rev3/); the clean rev-#3 runs (c32 t1/t2, c96 ×3) are archived in results/p4_6/rev3_two_regime/ —
+both sets must not be reused in claims. Rev-#4 re-runs all 9 cells fresh. This is the FINAL revision for H-4.6: if rev-#4
+fails its pre-registered bounds, the hypothesis is reported FALSIFIED as specified (charter §13).
+
+**SPS profile complete:** 19 points — AR C=8..128 (B=8..128) + SD K=4/8 C=8..64 (B≈10..86) + SD K=4/8 C=96
+(B≈124.2/130.5, SPS≈16.7/15.9; verified clean: own server startup=1, correct spec config). The two high-B SD points sit
+slightly below the AR trend at equal B (the fixed overhead above) — consistent with a single underlying curve plus
+constant overhead, which is exactly what rev-#4's unified fit absorbs.
+
+**Phase 4.4 re-run plan (hardened harness):** K=1 ×6 + knone c96 t2 on GPU0; K=2 ×6 on GPU1 — then H-4.4a/b
+re-analyzed on the full clean 30-cell set. Phase 4.6 rev-#4 cells (C=8/32/96 ×3) follow on the same GPUs after their
+respective re-runs finish.

@@ -39,6 +39,5 @@ SPID=$!
 
 kill $SPID 2>/dev/null; wait $SPID 2>/dev/null
 sleep 3
-kill $(cat "results/$tag/server.pid") 2>/dev/null; wait 2>/dev/null
-sleep 5
+./experiments/kill_server.sh "results/$tag/server.pid" "$PORT"
 echo "=== $tag done ==="
