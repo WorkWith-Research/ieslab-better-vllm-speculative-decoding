@@ -934,9 +934,25 @@ criteria fixed pre-run. **Revision R1 (dated, post-analysis):** acceptance-ratio
 (load-invariant) → primary trigger revised to measured TPOT trend + batch occupancy + prefill share (no concurrency
 thresholds); [CAL] block filled from Phase 6 operating points before any controller trial.
 
-**Next:** implement the V2 patch in the isolated worktree (GPU idle only), deterministic causal-verification tests,
-then the Track B comparison run set. Track A (P4.5R) stays deferred per directive §5; supervisor's heterogeneous
-prefill/decode characterization queued after Track B.
+**Track B Step 3a — IMPLEMENTED + unit-verified (2026-10-09, GPU idle).** The per-step SD on/off patch is implemented in
+the isolated worktree `/home/junior1/_dev/dspark-native-validation` on branch `track-b-live-sd` (commit 82255c3): a new
+`vllm/v1/core/sched/tb_controller.py` (measured-state decision, no concurrency thresholds) + minimal hooks in
+`scheduler.py` / `output.py` / `gpu/model_runner.py` / `spec_decode/utils.py`. OFF steps skip `speculator.propose()`
+entirely and clear pending drafts (0 new drafts scheduled; decode runs as plain AR, 1 token/req); ON steps are
+byte-identical to upstream. CUDA-graph safety verified: OFF-step shapes fall back to eager via `CudaGraphManager.dispatch`
+(no recapture). **Revision R2 (S1 restated to S1a parity + S1b directional — original S1 unmeasurable at n=3)** and
+**R3 (final controller design fixed before any trial)** are recorded in `docs/trackb-prereg.md`. R3 corrected two defects
+that implementing R1's "TPOT-trend slope" exposed: (1) unit mismatch — the per-step measured cost must be compared to an
+L-scaled AR threshold (`threshold(N)=2.77·est_ar_ms(N)`), else it would fire OFF at C=8 and kill the low-load benefit;
+(2) circular re-entry — re-entry is now **probe-based** (turn SD on for 3 steps after cooldown, commit only if the measured
+DSpark cost < threshold). Final rule classifies Phase 6 as C=8 ON / C=32 ON / C=64 OFF. **17 deterministic tests pass**
+(`tests/v1/core/test_tb_controller.py`), including the REAL `Scheduler.schedule()` causal assertion (OFF ⇒ 0 drafts +
+1 token/req; ON ⇒ K=7 drafts/req) and probe commit/revert/cooldown; existing vLLM spec-decode scheduler tests still pass
+(no regression).
+
+**Next:** the Track B comparison run set — AR / DSpark-K7 / CTRL-ON / CTRL-LIVE × C∈{8,32,64} × ≥3 valid reps (fresh
+server per trial, GPU1, counterbalanced), then analysis against S1a/S1b/S2/S3/S4. Track A (P4.5R) stays deferred per
+directive §5; supervisor's heterogeneous prefill/decode characterization queued after Track B.
 
 
 

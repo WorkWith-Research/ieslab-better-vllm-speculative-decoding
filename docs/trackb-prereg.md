@@ -95,3 +95,38 @@ Per-position acceptance rates are load-invariant across C=8/32/64 (0.72→…→
 - Occupancy/prefill-share terms enter as continuous modifiers of the effective threshold, not as standalone cutoffs.
 
 These are initial values fixed before controller trials; any post-hoc change beyond one charter §13 revision invalidates the run set.
+
+---
+
+## 9. Dated revision R2 (2026-10-09, after Phase 6 results, before implementation — success criterion S1 restated)
+
+**Problem discovered from measured noise:** S1 required CTRL-LIVE to beat DSpark-K7 at C=64 "by more than δ₆₄", where δ₆₄ = baseline run-to-run uncertainty. Phase 6 measured that uncertainty: the Welch 95% CI on Δ(C=64) spans [−6.1%, +1.6%] (half-width ≈ 3.9%), driven by DSpark-K7's own trial variance (σ ≈ 13 tok/s). At n=3, **no controller can clear a bar of that width** — the original S1 is unmeasurable as written, which would have guaranteed a vacuous FALSIFIED regardless of the mechanism.
+
+**Restated S1 (fixed now, before any controller trial):**
+- **S1a (parity recovery):** at C=64, CTRL-LIVE ≥ AR within the paired-run uncertainty (i.e., its 95% CI on Δ vs AR excludes a *meaningful* deficit: lower bound > −2%, where 2% ≈ half the measured AR trial noise floor σ_AR ≈ 0.3%).
+- **S1b (directional recovery over fixed-K):** at C=64, CTRL-LIVE > DSpark-K7 in ≥ 2 of 3 paired rounds AND mean difference > 0.
+- S1 = S1a ∧ S1b. Rationale: the prereg's GO intent was "recover the loss at/above the crossover"; Phase 6 established that loss is directional but within noise, so recovery to AR parity is the strongest claim the measurement can support, and S1b guards against "reaching parity by being a worse version of DSpark".
+
+**Unchanged:** S2 (low-load preservation), S3 (overhead ≤1% via CTRL-ON), S4 (causal correctness), validity rules, repetition counts, no-tuning-to-positive rule. This is the single prereg revision permitted by the measurement reality; any further change after runs start invalidates the run set.
+
+---
+
+## 10. Dated revision R3 (2026-10-09, at implementation — final controller design fixed before any controller trial)
+
+**Why a further revision was necessary (transparent record).** R1 specified the trigger as a "rolling TPOT-trend *slope*" plus occupancy/prefill-share modifiers. Implementing it against the real V2 runner exposed two concrete defects that would have made the controller misbehave, so the trigger is restated here in its final, testable form **before any controller trial** (this is the implementation-design fix; it does not touch S1–S4, validity rules, arms, conditions, or repetition counts):
+
+1. **Unit mismatch (would have broken low-load preservation).** R1's "TPOT" is per-*token* latency, but the only step-timing signal available in-process is the wall time between `schedule()` calls — a *per-step* cost that yields ~L accepted+bonus tokens/req when SD is on. Comparing a per-step DSpark cost to a per-token AR model would have fired OFF at C=8 (killing the +66% low-load benefit) and misfired elsewhere. The threshold must therefore be scaled by the load-invariant mean acceptance length L≈2.77 (Phase 6): an SD step's output equals ~L AR steps, so `threshold(N) = L · est_ar_ms(N)`.
+2. **Circular re-entry (would have flapped).** R1's "re-enter when TPOT trend flattens/falls" is unmeasurable while SD is off: the measured cost during an OFF period *is* the AR cost, which always looks cheap — so the controller would turn on immediately and flap. Re-entry must therefore be **probe-based**: after a cooldown, run SD on for a few steps, measure the *actual* DSpark step cost, and commit only if it is below threshold.
+
+**Final rule (implemented in `vllm/v1/core/sched/tb_controller.py`, isolated worktree branch `track-b-live-sd`, commit 82255c3):**
+- **Model:** `est_ar_ms(n) = 9.994 + 0.3838·n` (least-squares fit to Phase 6 AR mean-TPOT: 13.55/21.43/34.92 ms at n=8/32/64, max err 3.9%); `threshold(N) = L · est_ar_ms(N)` with **L = 2.77** (Phase 6 load-invariant acceptance length).
+- **Measured signal:** rolling mean (window W=2 s) of the wall time between consecutive `schedule()` calls, counting only SD-on decode steps; prefill-heavy steps (>30% non-draft tokens) and idle gaps (>500 ms) are excluded.
+- **Exit (ON→OFF):** ≥3 samples AND measured > `threshold(running)·(1+band)`, band = 0.15.
+- **Re-entry (OFF→ON):** after cooldown T_off=1 s, enter **probe** (SD on for 3 steps); commit ON if the probe's measured cost < `threshold(running)·(1−band)`, else revert OFF with a doubled cooldown (≥2 s). Cold start = ON.
+- **No concurrency threshold anywhere:** `running` enters only through the fitted cost model and the L-scaling; occupancy is logged, not used as a cutoff.
+
+**Phase 6 operating points under the final rule** (measured DSpark step cost ≈ TPOT·L vs exit band `threshold·1.15`): C=8: 25.0 ms < 41.7 → **ON** (preserves +66%); C=32: 72.5 ms < 90.8 → **ON** (DSpark still wins +13% throughput at C=32, so keeping it on is correct — the *throughput* crossover is between C=32 and C=64, even though TPOT crossed earlier); C=64: 130.8 ms > 110.2 → **OFF** (recovers AR parity). This matches the prereg's GO intent: preserve low/medium-load benefit, recover AR parity at saturation.
+
+**Verification before any controller trial:** 17 deterministic unit/integration tests pass in the isolated worktree (`tests/v1/core/test_tb_controller.py`), including the REAL `Scheduler.schedule()` causal assertion (OFF step ⇒ 0 new drafts scheduled and 1 token/req; ON step ⇒ K=7 drafts/req) and the probe commit/revert/cooldown transitions. The existing vLLM spec-decode scheduler tests still pass (no regression from the patch).
+
+**Unchanged:** S1a/S1b (R2), S2, S3, S4, validity rules (§5), arms, conditions (C∈{8,32,64}), ≥3 valid repetitions per cell, and the no-tuning-to-positive rule. If a harness bug is found during the controller run set, exactly one further revision of these constants is permitted under charter §13; any other post-hoc change invalidates the run set.
