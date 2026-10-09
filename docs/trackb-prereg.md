@@ -130,3 +130,83 @@ These are initial values fixed before controller trials; any post-hoc change bey
 **Verification before any controller trial:** 17 deterministic unit/integration tests pass in the isolated worktree (`tests/v1/core/test_tb_controller.py`), including the REAL `Scheduler.schedule()` causal assertion (OFF step ⇒ 0 new drafts scheduled and 1 token/req; ON step ⇒ K=7 drafts/req) and the probe commit/revert/cooldown transitions. The existing vLLM spec-decode scheduler tests still pass (no regression from the patch).
 
 **Unchanged:** S1a/S1b (R2), S2, S3, S4, validity rules (§5), arms, conditions (C∈{8,32,64}), ≥3 valid repetitions per cell, and the no-tuning-to-positive rule. If a harness bug is found during the controller run set, exactly one further revision of these constants is permitted under charter §13; any other post-hoc change invalidates the run set.
+
+---
+
+## 11. Dated revision R4 (2026-10-10, after the first full controller run set — bug fix + signal-validity finding)
+
+The first full run set (36 trials, all `bench_rc=0`) completed. Analysis of the
+CTRL-LIVE arm exposed **two independent defects**. This revision records both and
+the corrective action, in an append-only block, before the CTRL-LIVE re-run.
+
+### 11a. Defect 1 — implementation deviation from R3 (FIXED, no constants changed)
+
+R3 §"Measured signal" specifies a **"rolling mean (window W=2 s)"** of the wall
+time between consecutive `schedule()` calls. The shipped code instead averaged
+only the **last 4 samples** (`self._samples[-4:]`). At C=8 (~50 steps/s) the full
+window holds ~100 samples, so a single transient decode spike (the C=8 trace shows
+8 genuine spikes of 66–174 ms) pushed the last-4 mean to 42.5 ms — just over the
+exit band (41.6 ms) — flipping ON→OFF; the probe then re-measured during a quiet
+period (~20 ms < enter band 30.8 ms) and committed ON again; repeat every ~2 s
+(cooldown + probe). Result: C=8 spent **41% of steps OFF**, flapped through 18
+state transitions, and scored **649.5 tok/s vs native DSpark's 759.0 (−14%)** —
+failing S2 (low-load preservation).
+
+**Fix (commit `dce1651`):** replaced the last-4 mean with a true full-window mean
+(`_window_mean()`, all samples in the 2 s window) in the exit, probe-commit, and
+trace paths. **No constants changed** — threshold model, L-scaling, band (0.15),
+cooldown (1 s), probe steps (3), window (2 s) are all exactly as R3 registered.
+This is a restoration of the registered design, not a retune toward a positive
+result. Two regression tests pin the behavior: a single spike does NOT flip OFF;
+a sustained cost rise above the band STILL flips OFF (the controller is not
+blinded). 20 tests pass.
+
+**Verified on real serving data (C=8 re-run, r1):** BUGGY last-4 → OFF=41%, 18
+transitions, 649.5 tok/s; FIXED window → **OFF=0%, 0 transitions, 766.7 tok/s** —
+matching native DSpark (761) and CTRL-ON (766), i.e. S2 is satisfied at C=8.
+
+### 11b. Defect 2 — signal validity under vLLM V1 async scheduling (NOT fixable by tuning; a finding)
+
+The controller's measured signal is the wall time between consecutive
+`schedule()` calls. Under vLLM V1 **async scheduling** — which DSpark runs in by
+default and is explicitly supported (`vllm/config/vllm.py:1008` keeps it enabled
+for `method == "dspark"`; engine log confirms "Asynchronous scheduling is
+enabled") — the engine loop calls `scheduler.schedule()` then
+`execute_model(non_block=True)` and **does not block on the GPU** unless the batch
+queue is full (`vllm/v1/engine/core.py:547,549,576-581`). So `schedule()` returns
+after *enqueueing* a step, before its GPU forward pass completes. As load rises
+the queue stays full and the CPU keeps enqueueing faster than the GPU drains, so
+the `schedule()` cadence **decouples from true GPU step time more as load
+increases** — exactly where the controller most needs to sense rising
+verification cost.
+
+Back-calculating true per-step GPU time as `(L·C)/throughput` (L=2.77 accepted+
+bonus tokens/req, C running requests) and comparing to the measured `schedule()`
+cadence from the CTRL-LIVE traces:
+
+| C | true step time | measured cadence | gap |
+|---|---|---|---|
+| 8  | ~29 ms  | 19.8 ms | 1.47× |
+| 32 | ~91 ms  | 28.9 ms | 3.13× |
+| 64 | ~183 ms | 31.1 ms | **5.91×** |
+
+The measured cadence is roughly flat (20→31 ms) while true step time triples.
+Consequence: even with Defect 1 fixed, the registered signal systematically
+under-reports verification cost and its error *grows* toward saturation, so it
+cannot reliably detect the C=64 throughput crossover from in-process timing
+alone. This is a **scheduler-level observability finding**: per-step SD on/off
+decisions driven by `schedule()` cadence are not grounded in true GPU step cost
+under async scheduling. It does not invalidate the low/medium-load result (C=8,
+where the gap is small and the controller correctly stays ON); it bounds the
+claim at C=64.
+
+**Corrective action for the re-run:** the CTRL-LIVE arm is re-run with the
+Defect-1 fix so S2/S3 are measured on a correct implementation. The C=64 claim
+(S1) is interpreted against Defect 2: if the fixed controller does not recover AR
+parity at C=64, that is attributed to the signal-validity limit (11b), not to a
+threshold miss. No concurrency-based fallback is added (directive §4 prohibits it).
+
+**Unchanged:** S1a/S1b (R2), S2, S3, S4, all validity rules, arms, conditions,
+≥3 valid repetitions per cell, and the no-tuning-to-positive rule. The Defect-1
+fix changes no registered constant; the Defect-2 finding is recorded as a bound
+on the C=64 claim, not a criterion change.
