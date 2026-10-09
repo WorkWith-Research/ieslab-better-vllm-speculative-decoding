@@ -71,3 +71,27 @@ Let `X̄_C ± CI_C` be the mean output-throughput and 95% CI of arm X at conditi
 ## 7. Calibration block [CAL] — to be appended from Phase 6 analysis before any controller trial
 
 (empty by design)
+
+---
+
+## 8. Dated revision R1 (2026-10-09, post Phase 6 analysis — original §3 text preserved above)
+
+**Trigger revision, motivated by measured evidence (`docs/phase6-reproduction-prereg.md` §8.5):**
+Per-position acceptance rates are load-invariant across C=8/32/64 (0.72→…→0.03 at every concurrency; acceptance length ≈ 2.77). A rolling-acceptance-ratio trigger therefore has **no discriminating signal** on this workload and would never fire. The crossover is a verification-compute-amortization effect under GPU compute saturation, with TPOT crossing over AR already at C=32 (26.2 vs 21.4ms) — earlier than throughput.
+
+**Revised state/action rule (replaces §3's primary trigger; hysteresis/cooldown structure unchanged):**
+- **Primary state:** rolling-window (W = 2 s) measured **TPOT trend** (slope of per-step inter-token latency, from the scheduler's own step timing / spec stats — no external sensor), plus current **batch occupancy** (`len(running)` as a fraction of `max_num_seqs`) and **prefill share** of the last window (fraction of scheduled tokens that are non-draft/prefill).
+- **Action:** OFF when TPOT trend is rising AND (occupancy high OR prefill share high) — i.e., verification cost is no longer amortizing under load; ON (re-entry) after cooldown when TPOT trend flattens/falls. τ values [CAL] from Phase 6 per-cell TPOT/throughput operating points; the rule contains **no concurrency threshold** (occupancy enters as a continuous fraction, and only in conjunction with the latency trend).
+- Acceptance ratio retained as a **secondary guard only** (protects against a genuinely degrading drafter on other workloads; cannot be the sole trigger per §8.5 finding 3).
+
+**Unchanged:** success/falsification criteria (§6), validity rules (§5), causal-verification logging (§4.4), arm set, conditions, repetition count, and the prohibition on tuning-to-positive (one revision only, charter §13). The [CAL] block is filled from Phase 6 numbers below before any controller trial:
+
+### [CAL] (filled 2026-10-09 from Phase 6 results)
+
+- Operating points (mean of 3 trials): C=8: AR TPOT 13.55ms / DSpark 9.04ms (SD beneficial); C=32: AR 21.43 / DSpark 26.18 (SD costs +4.75ms/step); C=64: AR 34.92 / DSpark 47.21 (+12.29ms/step).
+- τ_off [CAL] = TPOT_trend slope such that marginal SD step cost > 0, anchored at the measured +4.75 ms/step penalty at C=32 (initial: trend > +1 ms per 0.5 s window sustained over W).
+- τ_on [CAL] = re-entry when trend ≤ −1 ms per 0.5 s for W (hysteresis band ±2 ms/s around zero slope).
+- T_off [CAL] = 1 s (sensitivity 0.5/2 s reported secondarily).
+- Occupancy/prefill-share terms enter as continuous modifiers of the effective threshold, not as standalone cutoffs.
+
+These are initial values fixed before controller trials; any post-hoc change beyond one charter §13 revision invalidates the run set.

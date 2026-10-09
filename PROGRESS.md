@@ -898,5 +898,45 @@ matched runtime, 3 trials/cell — must beat fixed-K=7 by > noise at C=64 withou
 **Audit status: COMPLETE.** Phase 5.2 (scheduler expansion) remains deprioritized per addendum; next work = P4.5R
 (Track A, deferred) and the Track B pre-registration above.
 
+---
+
+## 2026-10-09 (cont. 2) — New directive received: crossover reproduction + Track B live-state controller
+
+Directive "Native DSpark Baseline and Next Research Milestone" (checkpoint `8491ec0`). §2 state sync confirmed
+local=remote, no post-checkpoint work by others. Two deliverables completed this session:
+
+**Phase 6 — crossover reproduction (prereg + full run + analysis).** `docs/phase6-reproduction-prereg.md`
+(§8 = append-only results). 18 valid trials (3/cell × {AR, DSpark K=7} × C∈{8,32,64}), fresh server per trial,
+counterbalanced order, seed 0. One harness incident (my shell-quoting bug killed all first-pass DSpark servers;
+no data lost, logs preserved `*.failed1`, fix smoke-verified before relaunch).
+
+| C | AR tok/s | DSpark tok/s | Δ vs AR | Welch 95% CI |
+|---|---|---|---|---|
+| 8 | 459.6 ± 4.7 | **765.6 ± 1.0** | **+66.6%** | [+65.1, +68.1] |
+| 32 | 872.3 ± 7.8 | **986.2 ± 33.3** | **+13.1%** | [+7.7, +18.4] |
+| 64 | **983.4 ± 3.0** | 961.3 ± 25.9 | **−2.2%** | [−6.1, +1.6] |
+
+Preregistered decision rule → **REVISE branch**: sign pattern (+,+,-) reproduced (stronger at low load than Gate E),
+but the C=64 deficit's CI includes 0 at n=3 (directional: DSpark<AR in 3/3 paired rounds, every trial). Operating
+regime: C=64 = GPU-compute-saturated (util 100%), NOT KV-saturated (≤0.2%, zero preemptions). **Key mechanistic
+finding:** per-position acceptance is load-invariant (0.72→…→0.03 at all C; acc_len ≈ 2.77) — the crossover is a
+verification-compute-amortization effect, and TPOT crosses over AR already at C=32 (26.2 vs 21.4ms), earlier than
+throughput. Dated premise revision recorded in §8.6; Gate E's −4.5% single-trial figure is NOT claimed significant.
+
+**Track B — feasibility audit + controller prereg.** `docs/trackb-feasibility.md`: v0.25.0 has a native dynamic-K
+mechanism (`num_speculative_tokens_per_batch_size` → per-step `num_spec_tokens_to_schedule`) but it is **V1-runner-only**;
+DSpark forces the V2 GPU runner where that field is dead (grep-verified), draft width is fixed at init with FULL CGs,
+rejection sampler is fixed-K → **per-iteration variable K blocked (B1 worker / B2 verification / B3 channel)**.
+Feasible surface: **per-step binary SD on/off** via ~10-line patch (gate `speculator.propose()` in V2 runner; K=0 steps
+take the existing no-draft decode path), with per-step causal-verification logging. `docs/trackb-prereg.md`: H-TB,
+arms AR / DSpark-K7 / CTRL-ON (overhead control) / CTRL-LIVE, C∈{8,32,64} × ≥3 reps; success S1–S4 + falsification
+criteria fixed pre-run. **Revision R1 (dated, post-analysis):** acceptance-ratio trigger has no signal on this workload
+(load-invariant) → primary trigger revised to measured TPOT trend + batch occupancy + prefill share (no concurrency
+thresholds); [CAL] block filled from Phase 6 operating points before any controller trial.
+
+**Next:** implement the V2 patch in the isolated worktree (GPU idle only), deterministic causal-verification tests,
+then the Track B comparison run set. Track A (P4.5R) stays deferred per directive §5; supervisor's heterogeneous
+prefill/decode characterization queued after Track B.
+
 
 
