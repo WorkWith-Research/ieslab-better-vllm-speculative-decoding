@@ -985,3 +985,27 @@ workload; pressure enters via predicted payoff, not a growing cost term. Harness
 launcher `scripts/run_hoobs3.sh` + tracer field in worktree @ 333b37b.
 
 **Next:** Track A P4.5R corrected-proxy rerun remains the queued item (when it doesn't obstruct higher-priority work).
+
+### 2026-10-11 — P4.5R corrected-proxy rerun COMPLETE (Track A; hypothesis CONFIRMED, falsification not triggered)
+
+Corrected DSpark-rule proxy (`experiments/dsparkr_controller/`, commit 886a300): same decision rule
+as Phase 4.5, three mechanical fixes only per `docs/dspark-proxy-validity.md` §6 — F1 decide every
+running request + persistent k* (K=0 survives zero-draft steps); F4 B = total_num_scheduled_tokens
+(true batch) with monotone-decreasing extrapolation beyond the profile range; F2 censoring-aware J.
+Unit tests pass (`experiments/test_dsparkr.py`); C=32 smoke verified fixes live before the grid.
+
+6/6 cells valid (C∈{32,96} × 3 trials, server-side gen/s steady t≥20s, baselines reused from P2):
+- **Fixes confirmed working:** decided/N = 1.000 (was ~6–7%); B_live = 33.2 / 99.6 at C=32/96
+  (was ~7–25). The rule now prices saturation.
+- **C=96:** corrected proxy −4.5% vs AR (old buggy: −27.2%) — between fixed-K8 (−24.2%) and AR,
+  committed to SD-off (frac K=0 = 0.994). **+22.7pp recovered** → Phase 4.5's "worst arm" ranking
+  confirmed as an implementation-bug artifact, not a DSpark-rule failure.
+- **C=32:** −7.8% vs AR; within 0.5% of the P4.6 force-0 SD-off floor (1336.9) — the rule finds no
+  profitable speculation regime on this ngram stack, so it pays the floor and turns SD off.
+- **Verdict:** hypothesis CONFIRMED (between K8 and AR at C=96); falsification NOT triggered
+  (−4.5% outside ~2% trial noise). Rule is faithful given correct inputs; residual gap = SD-off
+  floor on an ngram-drafter stack (proxy-level limitation, ngram scope stated). Full report:
+  `docs/p45r-results.md`; prereg §6 closed with a dated completion note.
+
+**Next:** Track A P4.5R is now DONE — the queued item list is clear; remaining open project work is
+Phase 5 (speculation-aware scheduler, Issue #23) if/when prioritized.

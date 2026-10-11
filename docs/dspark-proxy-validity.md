@@ -162,6 +162,15 @@ claims. New run ID: **P4.5R**.
 - **Falsification:** corrected proxy within noise of AR at C=96 AND ≥ best fixed-K → the rule works and
   Phase 4.5's "worst arm" result was entirely the implementation bug.
 
+**RUN COMPLETE (2026-10-11):** 6/6 cells valid; results in `docs/p45r-results.md`. Hypothesis
+CONFIRMED (corrected proxy between K8 and AR at C=96: −4.5% vs AR, committed to SD-off with
+B_live=99.6); falsification NOT triggered (−4.5% is outside ~2% trial noise). The F1/F4 fixes are
+verified working (decided/N=1.000; B_live 33.2/99.6 vs the old ~7–25); residual gap to AR is the
+SD-off floor on an ngram-drafter stack (within 0.5% of the P4.6 force-0 floor at C=32). The Phase
+4.5 "worst arm" claim is confirmed as an implementation-bug artifact (+22.7pp recovered at C=96);
+the rule is faithful but finds no profitable speculation regime on ngram — proxy-level limitation,
+ngram scope stated.
+
 ## What this does NOT change
 
 - Phase 4.6/5.1 results: their controllers (ldmload, ldm_batch) already had the persistence fix and
