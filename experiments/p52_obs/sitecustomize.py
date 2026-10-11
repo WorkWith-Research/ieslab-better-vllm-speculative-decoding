@@ -245,6 +245,24 @@ def _install_patches():
 
             Scheduler.update_draft_token_ids = _hooked_drafts
 
+        # OFF-STATE mechanism (P3): the strongest feasible spec-path-free off-state, replicating
+        # Phase 5.1 M3's proven-stable approach. When VLLM_P52_OFFSTATE=1:
+        #   (1) skip the ngram drafter pass entirely (propose_draft_token_ids -> None early), and
+        #   (2) clear _draft_token_req_ids so take_draft_token_ids() returns None immediately,
+        #       avoiding the per-step draft_token_ids_event.synchronize() on stale data (M3's fix).
+        # Combined with FORCE0 truncation this is the maximal "SD off" state reachable at runtime.
+        if os.environ.get("VLLM_P52_OFFSTATE") == "1":
+            _orig_propose = GPUModelRunner.propose_draft_token_ids
+
+            def _hooked_propose(self, *args, **kwargs):
+                try:
+                    self._draft_token_req_ids = None
+                except Exception:
+                    pass
+                return None
+
+            GPUModelRunner.propose_draft_token_ids = _hooked_propose
+
         _orig_em = GPUModelRunner.execute_model
 
         def _patched_execute_model(self, scheduler_output, intermediate_tensors=None):
