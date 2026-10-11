@@ -94,7 +94,7 @@ def main():
                 if hs != 200:
                     break
             flat, labeled = parse_prom(body) if body else ({}, {})
-            row = {"t": round(time.time() - t0, 3)}
+            row = {"t": round(time.time() - t0, 3), "t_epoch": round(time.time(), 3)}
             for k, v in flat.items():
                 row[k] = round(v, 4)
             # gauges: max across label sets (live engine series wins over stale zeros)
