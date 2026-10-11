@@ -956,3 +956,32 @@ directive §5; supervisor's heterogeneous prefill/decode characterization queued
 
 
 
+
+### 2026-10-10/11 — H-OBS-1 closed (PARTIALLY CONFIRMED) + H-OBS-3 COMPLETE (H2 SUPPORTED, H3 NOT SUPPORTED, H1 INCONCLUSIVE)
+
+**H-OBS-1 (Issue #26, Done):** async GPU observability validation of the obs tracer. Verdict
+PARTIALLY CONFIRMED — `gpu_step_ms` = target forward + sampling + drafter cleanly separable via
+`gpu_fwd_ms`; nsys cross-check PASS (S1 anchor count / S3 aggregate busy gates); ≤0.5% overhead at C≤32.
+Full report: `docs/hoobs1-observability.md`. H-OBS-2 not pursued per its verdict.
+
+**H-OBS-3 (Issue #27, Done) — heterogeneous prefill/decode characterization of native fixed-K DSpark.**
+Prereg `docs/hoobs3-prereg.md` (prospective, fixed pre-run); results `docs/hoobs3-results.md` @ 35fb6aa.
+4 cells arm{ar,dspark} × C{32,96}, hetero client (SS/SL/LS/LL ISL×OSL classes, natural EOS, seed 20261011),
+180 s each — all DONE-VALID first attempt, hard stops audited clean (in_flight≥2 ≥0.995, 100% gpu_step_ms).
+
+- **H1 phase: INCONCLUSIVE.** Acceptance flat where labels are clean (c32: decode 0.6221 vs prefill 0.5931,
+  gap −0.029 < 0.03 bar, n=68 < 100 guard); c96 phase labels invalid under async admission + prefix caching.
+  Scope caveat: workload is cache-dominated — client reuses 4 canonical prompts, **97.3% prefix-cache hit rate**
+  in both dspark cells → prefill-heavy steps only 3.2% at C=32. Null does not extend to diverse-prompt serving.
+- **H2 class: SUPPORTED (strong).** DSpark/AR TPOT ratio within each C: c32 0.552–0.798 (range 35.9%),
+  c96 0.745–1.166 (range 43.8%). Long-output classes gain most; SS crosses to negative under saturation.
+- **H3 price: NOT SUPPORTED.** Drafter share flat vs pressure: dspark 0.214→0.209, ar 0.047→0.036
+  (Δ per +16 running: −0.25pp / −0.55pp; bar was >+1pp). Absolute drafter ms scales 16.4→31.2 with batch but
+  target forward scales faster. Net SD throughput gain: +30.9% (C=32) → +12.5% (C=96).
+
+**Opportunity surface for Track A:** class/OSL-aware admission = strong signal; phase features = none on this
+workload; pressure enters via predicted payoff, not a growing cost term. Harness: `experiments/hetero_client_qwen3.py`
++ `experiments/hoobs3_analyze.py` (epoch-aligned metrics↔steps via new additive `t_wall`/`t_epoch` fields);
+launcher `scripts/run_hoobs3.sh` + tracer field in worktree @ 333b37b.
+
+**Next:** Track A P4.5R corrected-proxy rerun remains the queued item (when it doesn't obstruct higher-priority work).
