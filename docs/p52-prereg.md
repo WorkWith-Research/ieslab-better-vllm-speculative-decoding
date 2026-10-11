@@ -100,6 +100,18 @@ sampled tokens to AR (correctness invariant), then a C=32 smoke for OOM/crash.
 **Hard stops (abort, no re-tune):** OOM or serving crash in any adjudication cell; the mechanism
 changes sampled tokens vs AR on a k\*=0 step; total wall > 4 GPU-hours for P1+P3 combined.
 
+**RUN COMPLETE (2026-10-11): FALSIFIED as specified.** 18/18 P3 cells valid, 0 crashes/OOM.
+specfree-off (force-0 truncation + full drafter-pass skip = M3 mechanism) recovers **none** of the
+floor: C=96 −9% of the AR−force-0 gap (worse than force-0), C=32 identical to force-0; both ~8–9%
+below AR. G1 literal threshold missed (49%/28%) but its falsification trigger was not hit — P1
+located the floor as entirely spec-path work, and code-tracing shows it is **structural to running
+with `speculative_config` set** (force-0 already takes the AR code path in `_prepare_inputs`;
+FLASH_ATTN v2 has no per-step spec branch; remaining cost = drafter pass runs every step + init-time
+GPU memory), so no runtime off-state can remove it. Durable result: the ~8–9% SD-off floor is a
+serving-architecture constant that any SD on/off controller must price as irreducible at saturation;
+reaching AR requires a genuinely spec-free serving path (separate AR pool / init-time no-spec), out of
+scope for in-loop controllers. Full report: `docs/p52-results.md`.
+
 ## 7. What this does / does not change
 
 - **Does:** directly test whether the SD-off floor is removable by making the spec path runtime-adaptive —

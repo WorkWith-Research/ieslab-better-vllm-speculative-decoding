@@ -1009,3 +1009,35 @@ Unit tests pass (`experiments/test_dsparkr.py`); C=32 smoke verified fixes live 
 
 **Next:** Track A P4.5R is now DONE — the queued item list is clear; remaining open project work is
 Phase 5 (speculation-aware scheduler, Issue #23) if/when prioritized.
+
+### 2026-10-11 — Phase 5.2 (H-5.2) COMPLETE: FALSIFIED as specified; floor located + root-caused
+
+Restarted Phase 5 per user directive. H-5.2 = "profile where the ~9% SD-off floor lives, then build a
+mechanism that removes it (spec-path-free off-state)." Prereg `docs/p52-prereg.md` (committed f67d7e2
+before any run). **Verdict: FALSIFIED as specified** — a runtime spec-path-free off-state does not
+remove the floor; but the experiment located its mechanism, which is the durable result.
+
+- **P1 (profile):** ported H-OBS-1's CUDA-event tracer to vLLM 0.19.1 as a sitecustomize overlay
+  (`experiments/p52_obs/`), anchored on `execute_model` (once/real-step) — key version fix: the 0.19.1
+  engine spins `schedule()` ~490×/step in a tight non-blocking loop, so schedule() is not a
+  once-per-step anchor (H-OBS-1's 0.25.0 blocked between steps). Floor decomposes per decode step into
+  forward-metadata sizing + sampling/drafter + CPU residual; both arms run at identical occupancy and
+  draft_tokens=0 on every force-0 step. G1 literal threshold (≥50% CPU-side residual) missed (49%/28%)
+  but its falsification trigger was not hit — the floor is entirely spec-path work.
+- **P3 (adjudication):** 18/18 cells valid, 0 crashes/OOM. specfree-off (force-0 truncation + full
+  drafter-pass skip = Phase 5.1 M3's mechanism) recovers NONE of the floor: C=96 −9% of the AR−force-0
+  gap (worse than force-0), C=32 identical to force-0; both ~8–9% below AR. FALSIFIED criterion met
+  (recovery ≤ 20% at C=96).
+- **Root cause (code-level, vLLM 0.19.1 eager):** the floor is structural to running with
+  `speculative_config` set — force-0 already takes the AR code path in `_prepare_inputs`
+  (`use_spec_decode=False` when drafts are zeroed); FLASH_ATTN v2 has no per-step spec branch; the
+  remaining cost is the ngram drafter pass running every step (M3's skip of exactly this recovered
+  nothing, A/B-confirmed) + init-time GPU memory that never returns per-step. So no runtime off-state
+  can remove it. Durable result: the ~8–9% SD-off floor is a serving-architecture constant that any SD
+  on/off controller (incl. native Track B) must price as irreducible at saturation; reaching AR requires
+  a genuinely spec-free serving path (separate AR pool / init-time no-spec), out of scope for in-loop
+  controllers.
+
+**Phase 5 is now closed** (H-5.1 falsified, H-5.2 falsified with mechanism located). Full report:
+`docs/p52-results.md`; prereg §6 closed with a dated completion note. Tooling committed (P1 @6ec6288,
+P3 @ed4d252); this entry + results doc + prereg close = final commit.
