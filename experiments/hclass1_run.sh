@@ -92,10 +92,12 @@ m = {
                   "--max-num-batched-tokens","4096"] + (["--enable-prefix-caching"] if cache_on else ["--no-enable-prefix-caching"]) + spec,
   "env": {"VLLM_TB_MODE": (None if arm == "ar" else "native"),
            "VLLM_OBS_TRACE": f"{out}/{cell}/obs"},
-  "workload": {"client":"hclass1_client.py","cond":cond,"classes":{"SS":[50,256],
-               "SL":[50,1024],"LS":[2048,256],"LL":[2048,1024]},
+  "workload": {"client":"hclass1_client.py","cond":cond,
+               "classes": ({"S":[50,2048],"L":[2048,2048]} if cond=="A"
+                           else {"SS":[50,256],"SL":[50,1024],"LS":[2048,256],"LL":[2048,1024]}),
                "arrival":"poisson" if cond=="A" else "back-to-back-rr",
-               "lambda_req_s": float(lam), "greedy": True, "ignore_eos": False},
+               "lambda_req_s": float(lam), "greedy": True, "ignore_eos": False,
+               "condA_stop_token_ids":[151645]},
   "sd_expected": ("off" if arm == "ar" else "on"),
 }
 json.dump(m, open(os.path.join(out, cell, "config_manifest.json"),"w"), indent=2)
@@ -154,7 +156,9 @@ validate_cell() { # $1=cell -> 0 valid, 1 invalid
   local okc errc minreq
   okc=$($PY -c "import json;r=[json.loads(l) for l in open('$dir/client.jsonl')];print(sum(1 for x in r if 'ttft_ms' in x))")
   errc=$($PY -c "import json;r=[json.loads(l) for l in open('$dir/client.jsonl')];print(sum(1 for x in r if 'err' in x))")
-  minreq=40; [ "$P_DUR" = "150" ] && minreq=60
+  # min ok-requests proportional to expected arrivals in the steady window
+  # (0.9*(DUR-WARMUP) s at rate lambda): low-load cells legitimately have few requests.
+  minreq=$($PY -c "import sys;print(max(15,int(0.6*float('$P_LAMBDA')*0.9*(float('$P_DUR')-20))))")
   [ "${okc:-0}" -ge $minreq ] || reasons+=("client ok-requests too low ($okc < $minreq)")
   $PY -c "import sys;ok,err=int('${okc:-0}'),int('$errc');sys.exit(0 if err*10 <= max(1,ok+err) else 1)" \
     || reasons+=("client error flood ($errc errors vs $okc ok)")

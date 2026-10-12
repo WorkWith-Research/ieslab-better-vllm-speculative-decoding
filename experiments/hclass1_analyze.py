@@ -14,8 +14,19 @@ from collections import defaultdict
 RESULTS = sys.argv[1] if len(sys.argv) > 1 else "results/hclass1"
 WARMUP = 20.0          # client-side warmup exclusion (s from run start)
 TAIL_FRAC = 0.10       # final 10% of steps excluded (shutdown tail)
-CLASSES = ["SS", "SL", "LS", "LL"]
-MAXTOK = {"SS": 256, "SL": 1024, "LS": 256, "LL": 1024}
+
+# Per-condition class schemes (prereg §4, deviations D1+D2): A is 2 ISL classes with a
+# uniform cap; B reproduces H-OBS-3's 4-class ISL x configured-horizon grid.
+SCHEME = {
+    "A": {"classes": ["S", "L"], "maxtok": {"S": 2048, "L": 2048},
+          "isl": {"S": 50, "L": 2048}},
+    "B": {"classes": ["SS", "SL", "LS", "LL"],
+          "maxtok": {"SS": 256, "SL": 1024, "LS": 256, "LL": 1024},
+          "isl": {"SS": 50, "SL": 50, "LS": 2048, "LL": 2048}},
+}
+# Pressure levels: filled by calibration (prereg §5b); overridable via HCLASS1_C_LEVELS.
+C_LEVELS = ([int(x) for x in os.environ.get("HCLASS1_C_LEVELS", "").split(",") if x.strip()]
+            or [8, 32, 96])
 
 def cells_matching(prefix):
     out = []
@@ -103,7 +114,7 @@ for cond in ("A", "B"):
                 "per_class": {},
                 "steps_n": len(steps),
             }
-            for cls in CLASSES:
+            for cls in SCHEME[cond]["classes"]:
                 rc = [r for r in st if r["cls"] == cls]
                 if not rc:
                     continue
@@ -118,7 +129,7 @@ for cond in ("A", "B"):
                     "ntok_p10": pct([r["ntok"] for r in rc], 10),
                     "ntok_p50": pct([r["ntok"] for r in rc], 50),
                     "ntok_p90": pct([r["ntok"] for r in rc], 90),
-                    "frac_at_max": round(sum(1 for r in rc if r["ntok"] >= MAXTOK[cls]) / len(rc), 3),
+                    "frac_at_max": round(sum(1 for r in rc if r["ntok"] >= SCHEME[cond]["maxtok"][cls]) / len(rc), 3),
                 }
             # step-side aggregates
             if steps:
@@ -188,9 +199,9 @@ def paired_ratio_ci(cond, C, cls, n_boot=2000):
             "ci95": [round(boots[int(0.025 * n_boot)], 4), round(boots[int(0.975 * n_boot)], 4)]}
 
 for cond in ("A", "B"):
-    for C in (8, 32, 96):
+    for C in C_LEVELS:
         row = {}
-        for cls in CLASSES:
+        for cls in SCHEME[cond]["classes"]:
             r = paired_ratio_ci(cond, C, cls)
             if r:
                 row[cls] = r
@@ -204,7 +215,7 @@ for cond in ("A", "B"):
 def ols_hc3():
     rows = []
     for cond in ("A", "B"):
-        for C in (8, 32, 96):
+        for C in C_LEVELS:
             key = f"{cond}_c{C}"
             if key not in report.get("ratios", {}):
                 continue
@@ -224,7 +235,7 @@ def ols_hc3():
                     if cls in cc.get("per_class", {}):
                         osl = cc["per_class"][cls]["ntok_p50"]
                         break
-                isl = {"SS": 50, "SL": 50, "LS": 2048, "LL": 2048}[cls]
+                isl = SCHEME[cond]["isl"][cls]
                 if osl and acc:
                     rows.append({"cond": cond, "C": C, "cls": cls, "ratio": r["mean"],
                                  "logOSL": math.log(osl), "logISL": math.log(isl), "acc": acc})
@@ -275,7 +286,9 @@ for cell, c in sorted(report["cells"].items()):
     lines.append(f"\n### {cell}")
     lines.append("| class | n | TTFT p50/p95 ms | TPOT p50/p95 ms | E2E p50/p95 s | ntok p10/p50/p90 | frac_at_max |")
     lines.append("|---|---:|---|---|---|---|---:|")
-    for cls in CLASSES:
+    m = re.match(r"(ar|dspark)_([AB])_c(\d+)_t(\d+)", cell)
+    cls_list = SCHEME[m.group(2)]["classes"] if m else []
+    for cls in cls_list:
         pc = c.get("per_class", {}).get(cls)
         if not pc:
             continue
@@ -289,7 +302,8 @@ for key in sorted(report.get("ratios", {})):
     lines.append(f"\n### {key} — cross-class range: **{row.get('_cross_class_range_pct')}%**")
     lines.append("| class | n_paired | mean ratio | 95% CI |")
     lines.append("|---|---:|---:|---|")
-    for cls in CLASSES:
+    cond = key[0]
+    for cls in SCHEME[cond]["classes"]:
         r = row.get(cls)
         if isinstance(r, dict):
             lines.append(f"| {cls} | {r['n_paired']} | {r['mean']} | [{r['ci95'][0]}, {r['ci95'][1]}] |")

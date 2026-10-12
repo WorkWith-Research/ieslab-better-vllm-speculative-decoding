@@ -1,9 +1,10 @@
 #!/bin/bash
 # H-CLASS-1 harness smoke (prereg §4 validation, pre-confirmatory):
-#   S1: AR server + condition A (diverse prompts, cache OFF), C=8, lambda=0.3, 60 s
-#       -> verifies: distinct prompts, natural EOS (realized OSL < max in >=2 classes),
-#          Poisson arrivals, tracer records, zero draft tokens (AR).
-#   S2: AR server + condition B (canonical 4 prompts, cache ON), C=8, 60 s
+#   S1: AR server + condition A (diverse prompts, cache OFF), C=8, lambda=0.4, 90 s
+#       -> verifies: distinct prompts, natural im_end termination (frac_at_max < 1.0
+#          overall; ISL brackets exact for S and L), Poisson arrivals, tracer records,
+#          zero draft tokens (AR).
+#   S2: AR server + condition B (canonical prompts: 2 distinct — ISL-50 & ISL-2048, cache ON), C=8, 60 s
 #       -> verifies: canonical construction loads, high prefix-cache hit rate,
 #          realized OSL == max_tokens (reproduces H-OBS-3 degenerate behavior).
 # GPU1, port 8402. Manual smoke — not part of the prereg cell grid.
@@ -60,7 +61,7 @@ stop_server() {
 }
 
 # ---- S1: condition A (diverse, cache OFF) ----
-echo "=== S1: AR + condA (diverse, cache OFF), C=8, lambda=0.3, 60s ==="
+echo "=== S1: AR + condA (diverse, cache OFF), C=8, lambda=0.4, 90s ==="
 for attempt in 1 2; do
   start_server s1_ar_a --no-enable-prefix-caching
   if wait_health s1_ar_a; then break; fi
@@ -70,8 +71,8 @@ for attempt in 1 2; do
   sleep 10   # settle delay: transient CUDA-init race seen after a rapid restart
 done
 mkdir -p "$OUT/s1_ar_a"
-cd "$ENV" && timeout 300 .venv/bin/python "$REPO/experiments/hclass1_client.py" \
-    $PORT 60 8 15 "$OUT/s1_ar_a/client.jsonl" 20261013 A 0.3 "$OUT/s1_ar_a/prompt_manifest.jsonl" > "$OUT/s1_ar_a/client.log" 2>&1
+cd "$ENV" && timeout 420 .venv/bin/python "$REPO/experiments/hclass1_client.py" \
+    $PORT 90 8 15 "$OUT/s1_ar_a/client.jsonl" 20261013 A 0.4 "$OUT/s1_ar_a/prompt_manifest.jsonl" > "$OUT/s1_ar_a/client.log" 2>&1
 echo "S1 client rc=$?"
 sleep 3; stop_server; sleep 10   # settle delay before next server start (transient CUDA-init race)
 
@@ -94,7 +95,11 @@ sleep 3; stop_server
 # ---- summary ----
 $PY - <<'EOF'
 import json, os
-for name in ("s1_ar_a", "s2_ar_b"):
+SCHEMES = {
+    "s1_ar_a": [("S", 2048), ("L", 2048)],
+    "s2_ar_b": [("SS", 256), ("SL", 1024), ("LS", 256), ("LL", 1024)],
+}
+for name, scheme in SCHEMES.items():
     p = f"/tmp/hclass1_smoke/{name}/client.jsonl"
     if not os.path.exists(p):
         print(f"{name}: NO client.jsonl"); continue
@@ -104,14 +109,15 @@ for name in ("s1_ar_a", "s2_ar_b"):
     pids = {r.get("pid") for r in ok}
     print(f"\n=== {name}: ok={len(ok)} err={err} distinct_pids={len(pids)} ===")
     from collections import defaultdict
-    by = defaultdict(list)
+    by = defaultdict(list); isl = defaultdict(list)
     for r in ok:
-        by[r["cls"]].append(r["ntok"])
-    for c, mx in (("SS",256),("SL",1024),("LS",256),("LL",1024)):
+        by[r["cls"]].append(r["ntok"]); isl[r["cls"]].append(r["isl"])
+    for c, mx in scheme:
         v = sorted(by.get(c, []))
         if not v: print(f"  {c}: n=0"); continue
         fam = sum(1 for x in v if x >= mx)/len(v)
-        print(f"  {c}: n={len(v)} ntok p10/p50/p90={v[len(v)//10]}/{v[len(v)//2]}/{v[9*len(v)//10]} frac_at_max={fam:.3f}")
+        iv = sorted(isl[c])
+        print(f"  {c}: n={len(v)} isl p50={iv[len(iv)//2]} ntok p10/p50/p90={v[len(v)//10]}/{v[len(v)//2]}/{v[9*len(v)//10]} frac_at_max={fam:.3f}")
     # obs trace
     sp = f"/tmp/hclass1_smoke/{name}/obs/steps.jsonl"
     if os.path.exists(sp):

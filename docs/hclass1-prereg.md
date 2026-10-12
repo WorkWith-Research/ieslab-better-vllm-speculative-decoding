@@ -26,10 +26,12 @@ H-OBS-3's H2 (per-class DSpark/AR TPOT ratio range 35.9% @C=32, 43.8% @C=96; LL 
 crossing above 1 at saturation) was measured on a workload with **three confounds** that this audit
 resolved by inspecting `experiments/hetero_client_qwen3.py` and the raw client records:
 
-1. **Prompt identity:** exactly 4 prompts total (one canonical prompt per class;
-   `PROMPTS = {c: make_prompt(...)}` with a per-ISL `_cache`) reused for all requests in all cells,
-   with `--enable-prefix-caching` → **97.3% prefix-cache hit rate** in both dspark cells. Prompt
-   content and cache behavior are fully confounded with class.
+1. **Prompt identity:** exactly **2 distinct prompts total** (one per ISL value; the client's
+   `make_prompt` `_cache` is keyed by ISL, so SS≡SL share the ISL-50 prompt and LS≡LL share the
+   ISL-2048 prompt — verified on raw records: each class shows a single distinct `isl` value), reused
+   for all requests in all cells, with `--enable-prefix-caching` → **97.3% prefix-cache hit rate** in
+   both dspark cells. Prompt content and cache behavior are fully confounded with the ISL axis; within
+   an ISL pair the classes differ only in their configured cap.
 2. **Realized OSL == configured max_tokens for 100% of requests.** Verified on the raw records:
    `ntok` equals its class's `maxtok` at min=p50=p95=max in every class/cell (frac_at_max = 1.000,
    zero natural-EOS terminations) despite the client's "NATURAL EOS" docstring — the synthetic prompts
@@ -51,12 +53,16 @@ as an explicit control condition so the original result can be re-measured side-
 
 - **H-C1 (replication under de-confounding):** the cross-class relative range of per-request
   DSpark/AR TPOT ratio exceeds **15%** within at least one pressure level, in **both** cache conditions
-  A and B, with the long-realized-OSL classes gaining more than short-realized-OSL classes (direction
-  consistent with H-OBS-3's ordering: SL/LL ≤ SS in ratio) in ≥1 condition.
+  A and B. Directional consistency with H-OBS-3 is assessed per condition: in **B** (4 classes), the
+  long-horizon classes (SL/LL) show lower DSpark/AR TPOT ratio than SS; in **A** (2 ISL classes S/L),
+  the ordering of S vs L is reported descriptively and counts as directionally consistent if it matches
+  B's pattern OR if the realized-OSL distribution differs between S and L and the class with the larger
+  realized OSL has the lower ratio. *A failure to reproduce the class-dependent payoff in either
+  condition is a reportable result (§7).*
 - **H-C2 (cache-condition robustness):** the sign of each class's DSpark/AR TPOT ratio is stable across
-  cache conditions A and B at matched pressure (a class that gains in one does not flip to losing in the
-  other by more than trial uncertainty). *A violation here would show H-OBS-3's effect was a
-  cache-reuse artifact.*
+  cache conditions A and B at matched pressure, for the classes that exist in both (comparing B's SS/SL
+  short-ISL pair against A's S, and B's LS/LL long-ISL pair against A's L). *A violation here would show
+  H-OBS-3's effect was a cache-reuse artifact.*
 - **H-C3 (OSL explanatory power, descriptive):** in a per-class regression of DSpark/AR TPOT ratio on
   realized OSL (log), ISL (log), and cell-level acceptance rate, realized OSL carries the dominant
   coefficient. *Descriptive only — §8 states the causal limits.*
@@ -77,20 +83,35 @@ turns (real conversations, not concatenated shreds), tokenized externally with t
 each request in a run gets a unique prompt id; no prompt is repeated within a condition; the same seeded
 assignment is used for AR and DSpark arms (paired by request identity).
 
-| class | ISL (tokens, exact) | max_tokens | intent | prompts/run |
-|---|---:|---:|---|---:|
-| SS | 50 (truncated real turns) | 256 | short chat | 480 |
-| SL | 50 | 1024 | short prompt, long generation | 480 |
-| LS | 2048 (real long-context turns) | 256 | RAG-style: long context, short answer | 192 |
-| LL | 2048 | 1024 | document QA, long response | 192 |
+**Condition A (primary) — two ISL classes, uniform cap.** Classes are defined by **ISL only**; one
+uniform `max_tokens = 2048` for both, so the cap is a generous ceiling and realized OSL is a free
+outcome variable (natural termination via stop token). The 4-class ISL×OSL-cap grid used in H-OBS-3 is
+deliberately NOT replicated here: harness validation showed Qwen3-4B's natural answers to these prompts
+are long-tailed (smoke at cap 1024: p50 already at the cap for long-context prompts), so per-class low
+caps truncate natural answers and make realized OSL a function of the configured cap — the exact
+configured-vs-realized-OSL confound this experiment exists to remove.
+
+| class | ISL (tokens, bracket [t−8, t+16]) | max_tokens | prompts/run |
+|---|---:|---:|---:|
+| S | 50 (truncated real turns) | 2048 | 480 |
+| L | 2048 (real long-context turns, pre-measured pool) | 2048 | 192 |
+
+**Condition B (control) — H-OBS-3's exact configuration** (re-measured side-by-side):
+
+| class | ISL (tokens, exact) | max_tokens | intent |
+|---|---:|---:|---|
+| SS | 50 (truncated real turns) | 256 | short chat |
+| SL | 50 | 1024 | short prompt, long generation |
+| LS | 2048 (real long-context turns) | 256 | RAG-style: long context, short answer |
+| LL | 2048 | 1024 | document QA, long response |
 
 - ISL is exact by token count (truncate/pad-free: turns are *selected* whose token length brackets the
   target and then truncated to it; padding never used). Selection per class is seeded; the full prompt
   set + sha256 per prompt is written to `results/hclass1/prompts_<condition>.jsonl` before any cell runs.
 - **Natural EOS** (no `--ignore-eos`), `temperature=0`, streaming, `stream_options.include_usage` for
   authoritative `completion_tokens`. Realized OSL (`ntok`) is recorded per request and reported as a
-  distribution; classes are defined by (ISL, max_tokens) and **realized OSL is an outcome variable**, so
-  "long-output class" claims in the analysis always refer to measured realized OSL.
+  distribution; **realized OSL is an outcome variable**, so any "long-output class" claim in the
+  analysis always refers to measured realized OSL, never the configured cap.
 - If a class's realized-OSL distribution collapses (e.g., ≥90% of requests hit `max_tokens` in a smoke),
   that class's max_tokens is lowered **during harness validation only** (before any confirmatory cell) and
   the change recorded here — this is workload construction, not result-driven tuning.
@@ -112,6 +133,22 @@ serves a sharper control: it isolates whether the class effect depends on the de
 prompt manifest records templated ids per pid. This deviation is fixed before any confirmatory cell;
 no threshold or analysis change accompanies it.
 
+**Deviation D2 (recorded during harness validation, 2026-10-12; before any confirmatory cell):**
+The second smoke (chat-templated prompts, stop token, cache OFF) confirmed the termination mechanism
+works (natural `im_end` stops observed; ISL brackets exact: S p50=56, L p50≈2040) but showed realized
+OSL still pinned to the cap for most classes (SS/LS `frac_at_max = 1.0` at maxtok 256; SL/LL p50 at the
+1024 cap): Qwen3-4B's natural answers to ShareGPT questions are long-tailed, so any per-class low cap
+is artificial truncation, not a "short-output class". The realized-OSL axis therefore cannot be
+controlled by caps on these prompts. Per the clause above, condition A was restructured during harness
+validation: **two ISL classes (S/L) with one uniform cap of 2048** (the table above), and the long-ISL
+prompt pool is now pre-measured (`data/hclass1_longpool.jsonl`, 1517 turns with templated token length
+≥2064, built by `experiments/build_hclass1_longpool.py`) so the 2048-ISL bracket is always reachable.
+H-C1/H-C2 were re-stated in §2 to match (range criterion per condition; A's S-vs-L ordering assessed
+against realized OSL). Condition B is unchanged and, with its per-class caps, now explicitly measures
+the *configured-horizon* version of the class effect — the two conditions jointly separate
+decode-horizon dependence from request-characteristic dependence. No threshold change accompanies this
+deviation; it is fixed before any confirmatory cell.
+
 **Cache conditions:**
 
 | condition | prefix caching | prompt reuse | purpose |
@@ -122,9 +159,13 @@ no threshold or analysis change accompanies it.
 Condition C (diverse prompts + cache ON) is deferred — it is only informative if A and B disagree in an
 unexplained way, and is pre-declared as out of scope for the confirmatory grid.
 
-**Arrival process:** Poisson arrivals at a fixed rate λ per condition (open-loop, steady state), 4 client
-workers drawing from the class queue round-robin; requests are issued on arrival, not back-to-back.
-λ is chosen in calibration (§5) to hit the target occupancy for each pressure level.
+**Arrival process:** condition A: Poisson arrivals at a fixed rate λ per condition (open-loop, steady
+state), C client workers drawing from the class queue round-robin; requests are issued on arrival, not
+back-to-back. λ is chosen in calibration (§5) to hit the target occupancy for each pressure level.
+Condition B reproduces H-OBS-3's *back-to-back* worker pattern (no rate control) **by construction** —
+it is the original confounded configuration and its offered load is service-time-determined, so A-vs-B
+comparisons are about the *sign/direction of class effects*, not matched absolute load (condition C
+deferred).
 
 ## 5. Calibration run (pre-confirmatory; output frozen before §6)
 
@@ -164,10 +205,13 @@ this file's §5b before any §6 cell starts; the confirmatory grid uses only tho
   running/waiting/KV gauges, prefix-cache hit/queries (conditions A/B), GPU util/mem/power.
 
 **Validity rule (per cell):** server startup-complete marker in its own log; client exit 0 with ≥50% of
-issued requests completed and error rate ≤10%; steps.jsonl non-empty with ≥95% of steps carrying
-`gpu_step_ms`; DSpark cells scheduled >1000 draft tokens, AR cells exactly 0; realized-OSL distribution
-per class not degenerate (≥5% of requests below max_tokens in ≥2 classes — else workload drift vs §4
-smoke). Invalid cells preserved, marked, excluded; one re-run attempt each (as in H-OBS-3).
+issued requests completed and error rate ≤10%; ok-requests ≥ max(15, ⌊0.6·λ·0.9·(DUR−20)⌋) (proportional
+to expected arrivals in the steady window — low-load cells legitimately have few requests); steps.jsonl
+non-empty with ≥95% of steps carrying `gpu_step_ms`; DSpark cells scheduled >1000 draft tokens, AR cells
+exactly 0; async overlap preserved (`in_flight ≥ 2` fraction ≥ 0.9); condition A realized-OSL
+distribution not degenerate (overall `frac_at_max < 0.95` — i.e., a majority of requests terminate
+naturally below the uniform cap — and per-class ISL p50 within its §4 bracket, else workload drift vs the
+§4 smoke). Invalid cells preserved, marked, excluded; one re-run attempt each (as in H-OBS-3).
 
 ## 7. Analysis plan and verdict rule (fixed now)
 
@@ -179,10 +223,10 @@ trial level** (n=3 independent servers per cell) plus request-level paired boots
 1. **Per-class DSpark/AR TPOT ratio** (p50 per class, steady window), per condition × pressure, with
    95% CI from trial-level means (Welch) and request-paired bootstrap. Cross-class relative range within
    each (condition, pressure).
-2. **H-C1:** SUPPORTED if range > 15% in both conditions A and B at ≥1 common pressure level AND the
-   long-realized-OSL classes have lower ratio than short-realized-OSL classes in ≥1 condition; FALSIFIED
-   if range ≤ 15% in both conditions at all pressures; INCONCLUSIVE otherwise (e.g., one condition only,
-   or direction inconsistent).
+2. **H-C1:** SUPPORTED if the cross-class range > 15% in both conditions at ≥1 common pressure level AND
+   the direction criterion of §2 holds (B: SL/LL ratio < SS ratio; A: S-vs-L ordering matches B's pattern
+   or tracks realized OSL as specified). FALSIFIED if range ≤ 15% in both conditions at all pressures;
+   INCONCLUSIVE otherwise (e.g., one condition only, or direction inconsistent).
 3. **H-C2:** per-class sign stability across A/B at matched pressure; report the worst flip magnitude vs
    trial uncertainty.
 4. **H-C3 (descriptive):** OLS of class ratio on log(realized OSL), log(ISL), cell acceptance rate;
