@@ -2,7 +2,7 @@
   "updated_utc": "2026-10-12T19:30:00Z",
   "active_hypothesis": "H-CLASS-1: native fixed-K=7 DSpark's per-request latency payoff varies systematically by observable request characteristics (realized OSL, ISL, content/draftability) under realistic heterogeneous serving; H-OBS-3's class effect must be re-tested de-confounded",
   "current_task": "calibration: cal_ar_{8,16,32,48,96} (AR, cond A, 90s each) running as proc_2e06d117f0c5 on GPU0; then freeze P_low/P_med/P_high into prereg s5b and launch the 36-cell confirmatory grid",
-  "checkpoint_commit": "81f9b6c",
+  "checkpoint_commit": "8061c0f",
   "issue": 28,
   "project_item_id": "PVTI_lADOEyEOMs4Bl95-zhAIokA",
   "prereg": "docs/hclass1-prereg.md (deviations D1+D2 recorded; H-C1/H-C2 re-stated for 2-ISL-class condition A)",
@@ -26,8 +26,8 @@
     "hoobs3_h2_prior": "TPOT-ratio range 35.9% @C32, 43.8% @C96 (confounded: 2 distinct prompts at 97.3% cache hits, OSL==max_tokens 100%, all-at-once decay)",
     "phase6_crossover": "AR vs DSpark K=7: +66.6% C=8, +13.1% C=32, -2.2% C=64 (CI includes 0)"
   },
-  "retry_count": 3,
-  "failure_reason": "smoke attempts 1-2 failed on harness bugs (set -u same-line local self-ref x5; client out-dir not created) + transient CUDA-driver-init race on rapid server restart (self-resolves ~90s; guarded by settle delay + 1 auto-retry in smoke/run scripts). Smoke A v2 (chat-template, cap 1024) passed mechanically but exposed the OSL-cap degeneracy -> deviation D2.",
+  "retry_count": 4,
+  "failure_reason": "smoke attempts 1-2 failed on harness bugs (set -u same-line local self-ref x5; client out-dir not created) + transient CUDA-driver-init race on rapid server restart (self-resolves ~90s; guarded by settle delay + 1 auto-retry in smoke/run scripts). Smoke A v2 exposed the OSL-cap degeneracy -> deviation D2. Calibration launch #1 died instantly: parse_cell() used \\d in bash [[ =~ ]] (POSIX ERE, matches nothing) so every cell label was 'unparseable' — latent, whole grid would have failed; fixed to [0-9] and verified via --dry-run (all 41 cells parse), commit 8061c0f.",
   "next_autonomous_action": "when cal_ar_{8,16,32,48,96} finish: read per-cell occupancy (running/waiting p50+frac, throughput, kv_util) from results/hclass1/cal_ar_*/; apply prereg s5 selection rules (P_low = lowest sustained waiting_p50==0 & running>=16; P_med = within 5% of max throughput with intermittent waiting; P_high = highest sustained waiting>0); write frozen (lambda, C) pairs into prereg s5b + HCLASS1_C_LEVELS in run.sh; commit+push; then launch confirmatory grid arm{ar,dspark} x cond{A,B} x 3 pressures x 3 trials (HCLASS1_GPU=0)",
   "hard_stops": ["GPU not free -> refuse", "OOM/crash beyond 1 re-run", "in_flight>=2 fraction <0.9", ">4 invalid cells after re-runs", ">20 GPU-hours total"]
 }
