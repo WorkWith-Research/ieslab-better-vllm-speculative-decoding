@@ -153,13 +153,15 @@ for cond in ("A", "B"):
             cache_rate = None
             if len(sm) > 2:
                 if arm == "dspark":
-                    d_tok = [m.get("vllm:spec_decode_num_draft_tokens[counter]_d", 0) or 0 for m in sm]
-                    a_tok = [m.get("vllm:spec_decode_num_accepted_tokens[counter]_d", 0) or 0 for m in sm]
+                    # scraper writes per-interval deltas as "<name>_d" (it strips "[counter]",
+                    # not appends "_d") — the earlier "...[counter]_d" key never matched -> None.
+                    d_tok = [m.get("vllm:spec_decode_num_draft_tokens_d", 0) or 0 for m in sm]
+                    a_tok = [m.get("vllm:spec_decode_num_accepted_tokens_d", 0) or 0 for m in sm]
                     dt, at = sum(d_tok), sum(a_tok)
                     if dt > 0:
                         acc = round(at / dt, 4)
-                q = [m.get("vllm:prefix_cache_queries[counter]_d", 0) or 0 for m in sm]
-                h = [m.get("vllm:prefix_cache_hits[counter]_d", 0) or 0 for m in sm]
+                q = [m.get("vllm:prefix_cache_queries_d", 0) or 0 for m in sm]
+                h = [m.get("vllm:prefix_cache_hits_d", 0) or 0 for m in sm]
                 if sum(q) > 0:
                     cache_rate = round(sum(h) / sum(q), 4)
             c["acceptance_rate"] = acc

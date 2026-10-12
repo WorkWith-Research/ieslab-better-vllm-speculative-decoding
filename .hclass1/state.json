@@ -1,7 +1,7 @@
 {
   "updated_utc": "2026-10-13T00:40:00Z",
   "active_hypothesis": "H-CLASS-1: native fixed-K=7 DSpark's per-request latency payoff varies systematically by observable request characteristics (realized OSL, ISL, content/draftability) under realistic heterogeneous serving; H-OBS-3's class effect must be re-tested de-confounded",
-  "current_task": "confirmatory grid LAUNCHING: arm{ar,dspark} x cond{A,B} x pressure{P_low=16,P_med=48,P_high=96} x 3 trials = 36 cells, counterbalanced (arms alternate within each block), GPU0, DUR=150s",
+  "current_task": "confirmatory grid FIRST PASS complete (31/36 valid; 5 cells failed on transient CUDA-driver-init race at server startup); pre-specified one-attempt re-run of the 5 in flight as proc_dad6f8d4f532 (GPU0, ~35min). Then analyze -> verdict -> results doc.",
   "checkpoint_commit": "abadaaf",
   "issue": 28,
   "project_item_id": "PVTI_lADOEyEOMs4Bl95-zhAIokA",
