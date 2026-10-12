@@ -193,12 +193,38 @@ print("canonical (cond B) prompt lens:", {c: len(v) for c, v in CANON.items()}, 
 rng = random.Random(SEED)
 requests = []   # list of (cls, ids, pid)
 if COND == "A":
+    # Condition A uses a PRE-TEMPLATED diverse prompt bank (data/hclass1_prompt_bank.jsonl,
+    # built by experiments/build_hclass1_prompt_bank.py): 10000 S + 10000 L prompts, each a
+    # distinct real ShareGPT-V3 turn chat-templated and truncated into its ISL bracket.
+    # Loading pre-tokenized ids is fast (no per-prompt template encoding at client start) and
+    # deterministic: we shuffle the bank with SEED and draw unique prompts in order, so every
+    # request gets a distinct prompt id and AR/DSpark arms share the same seeded assignment.
+    BANK = "/home/junior1/_dev/better-vllm-speculative-decoding/data/hclass1_prompt_bank.jsonl"
+    bank = {"S": [], "L": []}
+    for l in open(BANK):
+        e = json.loads(l)
+        if e["cls"] in bank:
+            bank[e["cls"]].append(e["ids"])
+    for c in ("S", "L"):
+        if not bank[c]:
+            raise SystemExit(f"prompt bank missing/empty for class {c}: {BANK}")
     n_est = int(LAMBDA * DURATION * 1.6) + CONCURRENCY * 4
-    used_pids = set()
+    # per-class draw cursors over a seeded shuffle of the bank (unique prompts, no in-run reuse)
+    order = {c: list(range(len(bank[c]))) for c in ("S", "L")}
+    for c in ("S", "L"):
+        rng.shuffle(order[c])
+    # hard guard: never silently cycle a class's bank within one run (would repeat prompts,
+    # breaking the no-reuse condition and correlating acceptance across requests).
+    max_draws = -(-n_est // len(ORDER))   # ceil(n_est / n_classes)
+    for c in ("S", "L"):
+        if max_draws > len(bank[c]):
+            raise SystemExit(f"prompt bank too small for class {c}: need {max_draws} unique "
+                             f"prompts, bank has {len(bank[c])} — increase the bank or lower load")
+    cursor = {"S": 0, "L": 0}
     for k in range(n_est):
         cls = ORDER[k % len(ORDER)]
-        cfg = CLASSES[cls]
-        ids = make_diverse(cfg["isl"], rng)
+        ids = bank[cls][order[cls][cursor[cls] % len(bank[cls])]]
+        cursor[cls] += 1
         pid = f"A{SEED}_{k:06d}"
         requests.append((cls, ids, pid))
 elif COND == "B":

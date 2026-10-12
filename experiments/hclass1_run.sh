@@ -245,11 +245,16 @@ mkdir -p "$OUT"
 DRY=0; [ "${1:-}" = "--dry-run" ] && DRY=1
 if [ $DRY -eq 1 ]; then shift; fi
 
+# Frozen confirmatory pressure points: prereg §5b (filled by calibration). Until s5b is
+# frozen, the default candidate set {8,32,96} applies — but the grid MUST track the
+# frozen values, so override with HCLASS1_C_LEVELS once §5b is written.
+C_POINTS="${HCLASS1_C_LEVELS:-8 32 96}"
+
 CAL_CELLS="cal_ar_8 cal_ar_16 cal_ar_32 cal_ar_48 cal_ar_96"
 CONFIRM_CELLS=""
 for cond in A B; do
   for arm in ar dspark; do
-    for C in 8 32 96; do
+    for C in $C_POINTS; do
       for t in 1 2 3; do CONFIRM_CELLS="$CONFIRM_CELLS ${arm}_${cond}_c${C}_t${t}"; done
     done
   done

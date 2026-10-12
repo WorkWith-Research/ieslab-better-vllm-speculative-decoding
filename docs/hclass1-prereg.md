@@ -154,7 +154,7 @@ deviation; it is fixed before any confirmatory cell.
 | condition | prefix caching | prompt reuse | purpose |
 |---|---|---|---|
 | **A** (primary) | OFF (`--no-enable-prefix-caching`) | diverse distinct prompts | de-confounded: no cache, real content diversity |
-| **B** (control) | ON | H-OBS-3's 4 canonical prompts verbatim | re-measure the original confounded configuration side-by-side |
+| **B** (control) | ON | H-OBS-3's canonical prompts verbatim (2 distinct — one per ISL value; SS≡SL, LS≡LL) | re-measure the original confounded configuration side-by-side |
 
 Condition C (diverse prompts + cache ON) is deferred — it is only informative if A and B disagree in an
 unexplained way, and is pre-declared as out of scope for the confirmatory grid.
@@ -268,8 +268,12 @@ after §5b is frozen, no post-hoc window changes.
 
 - Launcher: `experiments/hclass1_run.sh` (this repo; patterned on H-OBS-3's launcher: GPU lock, health
   verification, per-cell manifest with worktree rev, validity checks).
-- Client: `experiments/hclass1_client.py` (diverse-prompt Poisson client; condition B mode reuses the
-  canonical 4 prompts). Prompt sets: `results/hclass1/prompts_<cond>.jsonl` + sha256 manifest.
+- Client: `experiments/hclass1_client.py` (diverse-prompt Poisson client; condition A draws from the
+  pre-templated bank, condition B reuses H-OBS-3's canonical prompts — 2 distinct — byte-identically).
+- Prompt artifacts: `data/hclass1_longpool.jsonl` (pre-measured long turns;
+  `experiments/build_hclass1_longpool.py`) and `data/hclass1_prompt_bank.jsonl` (condition A bank;
+  `experiments/build_hclass1_prompt_bank.py`, seed 20261013). Per-run prompt sets:
+  `results/hclass1/prompts_<condition>.jsonl` + sha256 manifest.
 - Analysis: `experiments/hclass1_analyze.py` → `results/hclass1/analysis.json` + `analysis_table.md`.
 - Raw artifacts under `results/hclass1/<cell>/` (gitignored; local only). Workload hashes recorded per
   cell in its `config_manifest.json`.
