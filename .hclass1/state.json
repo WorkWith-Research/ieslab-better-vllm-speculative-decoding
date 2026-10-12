@@ -1,33 +1,48 @@
 {
-  "updated_utc": "2026-10-12T19:30:00Z",
+  "updated_utc": "2026-10-13T00:40:00Z",
   "active_hypothesis": "H-CLASS-1: native fixed-K=7 DSpark's per-request latency payoff varies systematically by observable request characteristics (realized OSL, ISL, content/draftability) under realistic heterogeneous serving; H-OBS-3's class effect must be re-tested de-confounded",
-  "current_task": "calibration: cal_ar_{8,16,32,48,96} (AR, cond A, 90s each) running as proc_2e06d117f0c5 on GPU0; then freeze P_low/P_med/P_high into prereg s5b and launch the 36-cell confirmatory grid",
-  "checkpoint_commit": "8061c0f",
+  "current_task": "confirmatory grid LAUNCHING: arm{ar,dspark} x cond{A,B} x pressure{P_low=16,P_med=48,P_high=96} x 3 trials = 36 cells, counterbalanced (arms alternate within each block), GPU0, DUR=150s",
+  "checkpoint_commit": "abadaaf",
   "issue": 28,
   "project_item_id": "PVTI_lADOEyEOMs4Bl95-zhAIokA",
-  "prereg": "docs/hclass1-prereg.md (deviations D1+D2 recorded; H-C1/H-C2 re-stated for 2-ISL-class condition A)",
+  "prereg": "docs/hclass1-prereg.md (deviations D1+D2 harness; D3 validity-floor recorded at s5b freeze; H-C1/H-C2 re-stated for 2-ISL-class condition A)",
   "scope_note": "docs/p52-scope-note.md",
   "worktree": "/home/junior1/_dev/dspark-native-validation (branch track-b-live-sd, rev recorded per cell)",
-  "gpu": "GPU0 (HCLASS1_GPU=0; GPU1 occupied by external job at smoke time — refuse-to-kill rule). port 8402",
+  "gpu": "GPU0 (HCLASS1_GPU=0; GPU1 occupied by external job at smoke time - refuse-to-kill rule). port 8402",
   "harness_changes_since_55ac17a": [
     "condition A restructured to 2 ISL classes S(50)/L(2048), uniform maxtok 2048 (deviation D2): per-class low caps truncate Qwen3-4B's long-tailed natural answers -> realized OSL == cap, the exact confound being removed",
-    "condition A prompts from pre-templated bank data/hclass1_prompt_bank.jsonl (build_hclass1_prompt_bank.py; 10000 S + 10000 L distinct ShareGPT-V3 turns, chat-template, stop_token_ids=[151645]); long pool pre-measured in data/hclass1_longpool.jsonl (char filters unreliable: only 39.6% of char>=5000 reach 2064 templated tok)",
-    "condition B canonical prompts byte-identical to H-OBS-3 verified (replicates its per-ISL _cache RNG semantics; SS==SL, LS==LL -> 2 distinct prompts, NOT 4 — prereg s1 confound #1 corrected on raw records)",
-    "analyzer: per-condition SCHEME + C_LEVELS from env HCLASS1_C_LEVELS (calibration fills); run script: min ok-requests now proportional to expected arrivals (low-load cells), manifest records cond-A stop token"
+    "condition A prompts from pre-templated bank data/hclass1_prompt_bank.jsonl (build_hclass1_prompt_bank.py; 10000 S + 10000 L distinct ShareGPT-V3 turns, chat-template, stop_token_ids=[151645]); long pool pre-measured in data/hclass1_longpool.jsonl",
+    "condition B canonical prompts byte-identical to H-OBS-3 (SS==SL, LS==LL -> 2 distinct prompts)",
+    "FIX parse_cell() regex: \\d is invalid in bash [[ =~ ]] (POSIX ERE) -> [0-9]; latent bug that would have rejected the WHOLE grid (commit 8061c0f)",
+    "freeze s5b lambda table into lookup_lambda (P_low=16/0.5714, P_med=48/1.7143, P_high=96/3.4286); non-frozen C -> empty lambda -> parse_cell rejects loudly",
+    "D3 validity floor: cond-A now gates on APPLIED LOAD (dispatcher issued >= 0.85*lam*0.95*DUR, dropped_full_queue==0) + SERVICE-AWARE completion floor max(15, 0.6*min(lam*win, SAT_REQ_RATE*DUR)) with SAT_REQ_RATE=0.35 req/s; old arrival-rate floor over-predicted ~4x under saturation and would false-reject every P_high cell",
+    "counterbalance: confirmatory loop now cond->C->trial->arm so arms ALTERNATE within each block (ar_t1 dspark_t1 ar_t2 dspark_t2 ...) per prereg s6"
   ],
   "experiment_manifest": {
-    "calibration": {"status": "pending", "cells": ["cal_ar_8", "cal_ar_16", "cal_ar_32", "cal_ar_48", "cal_ar_96"], "purpose": "freeze P_low/P_med/P_high (lambda, C-threads) into prereg s5b"},
-    "confirmatory": {"status": "pending-after-calibration", "cells": "arm{ar,dspark} x cond{A,B} x pressure{P_low,P_med,P_high} x 3 trials = 36"}
+    "calibration": {"status": "COMPLETE", "cells": ["cal_ar_8", "cal_ar_16", "cal_ar_32", "cal_ar_48", "cal_ar_96"], "note": "all 5 VALID under D3 (cal_ar_96 ok=128/issued=324/dropped=0 passes applied-load gate); proc_f38c337b52d9 exited 0"},
+    "confirmatory": {"status": "running", "cells": "arm{ar,dspark} x cond{A,B} x pressure{P_low,P_med,P_high} x 3 trials = 36, counterbalanced"}
   },
-  "completed_cells": [],
-  "pending_cells": ["calibration (5)", "confirmatory (36)"],
-  "job_ownership": {"active_jobs": ["proc_2e06d117f0c5: calibration cal_ar_{8,16,32,48,96} (GPU0)"], "lock": "/tmp/hclass1_gpu0.lock"},
+  "frozen_pressure_points_s5b": {
+    "P_low": {"C": 16, "lambda": 0.5714, "regime": "running-limited no queue (running p50=16, waiting frac>0=0.000)"},
+    "P_med": {"C": 48, "lambda": 1.7143, "regime": "transition (tok/s within 1.2% of max; first intermittent waiting frac>0=0.061)"},
+    "P_high": {"C": 96, "lambda": 3.4286, "regime": "sustained queue (running p50=42->max 64, waiting p50=16 frac>0=0.665)"}
+  },
+  "calibration_occupancy_AR_condA_90s": {
+    "8":  {"running_p50_max": "8/8",   "waiting_p50": 0,  "waiting_frac_gt0": 0.000, "tpot_p50_ms": 15.7},
+    "16": {"running_p50_max": "16/16", "waiting_p50": 0,  "waiting_frac_gt0": 0.000, "tpot_p50_ms": 20.4},
+    "32": {"running_p50_max": "30/32", "waiting_p50": 0,  "waiting_frac_gt0": 0.000, "tpot_p50_ms": 29.3},
+    "48": {"running_p50_max": "37/48", "waiting_p50": 0,  "waiting_frac_gt0": 0.061, "tpot_p50_ms": 37.2},
+    "96": {"running_p50_max": "42/64", "waiting_p50": 16, "waiting_frac_gt0": 0.665, "tpot_p50_ms": 44.9}
+  },
+  "completed_cells": ["cal_ar_8", "cal_ar_16", "cal_ar_32", "cal_ar_48", "cal_ar_96"],
+  "pending_cells": ["confirmatory (36)"],
+  "job_ownership": {"active_jobs": [], "lock": "/tmp/hclass1_gpu0.lock"},
   "latest_validated_results": {
     "hoobs3_h2_prior": "TPOT-ratio range 35.9% @C32, 43.8% @C96 (confounded: 2 distinct prompts at 97.3% cache hits, OSL==max_tokens 100%, all-at-once decay)",
     "phase6_crossover": "AR vs DSpark K=7: +66.6% C=8, +13.1% C=32, -2.2% C=64 (CI includes 0)"
   },
-  "retry_count": 4,
-  "failure_reason": "smoke attempts 1-2 failed on harness bugs (set -u same-line local self-ref x5; client out-dir not created) + transient CUDA-driver-init race on rapid server restart (self-resolves ~90s; guarded by settle delay + 1 auto-retry in smoke/run scripts). Smoke A v2 exposed the OSL-cap degeneracy -> deviation D2. Calibration launch #1 died instantly: parse_cell() used \\d in bash [[ =~ ]] (POSIX ERE, matches nothing) so every cell label was 'unparseable' — latent, whole grid would have failed; fixed to [0-9] and verified via --dry-run (all 41 cells parse), commit 8061c0f.",
-  "next_autonomous_action": "when cal_ar_{8,16,32,48,96} finish: read per-cell occupancy (running/waiting p50+frac, throughput, kv_util) from results/hclass1/cal_ar_*/; apply prereg s5 selection rules (P_low = lowest sustained waiting_p50==0 & running>=16; P_med = within 5% of max throughput with intermittent waiting; P_high = highest sustained waiting>0); write frozen (lambda, C) pairs into prereg s5b + HCLASS1_C_LEVELS in run.sh; commit+push; then launch confirmatory grid arm{ar,dspark} x cond{A,B} x 3 pressures x 3 trials (HCLASS1_GPU=0)",
+  "retry_count": 5,
+  "failure_reason": "smoke attempts 1-2 failed on harness bugs (set -u same-line local self-ref x5; client out-dir not created) + transient CUDA-driver-init race on rapid server restart (self-resolves ~90s; guarded by settle delay + 1 auto-retry). Smoke A v2 exposed OSL-cap degeneracy -> D2. Calibration launch #1 died instantly: parse_cell() used \\d in bash [[ =~ ]] (POSIX ERE, matches nothing) -> every cell 'unparseable'; fixed to [0-9] (8061c0f). cal_ar_96 auto-flagged INVALID by the arrival-rate completion floor (ok=128 < 129) - a boundary miss-by-one that exposed the floor's invalid completions~=arrivals assumption under saturation -> D3 (applied-load gate + service-aware floor).",
+  "next_autonomous_action": "confirmatory grid running on GPU0: monitor results/hclass1/*/DONE|INVALID; expect ~6-7 min/cell (150s run + server start/teardown) x 36 = ~4h. On completion: run experiments/hclass1_analyze.py -> verdict per prereg s7; write docs/hclass1-results.md; update PROGRESS.md + GitHub issue #28; commit+push raw results stay local (results/ gitignored). Hard stops: >4 invalid after re-runs, >20 GPU-hours.",
   "hard_stops": ["GPU not free -> refuse", "OOM/crash beyond 1 re-run", "in_flight>=2 fraction <0.9", ">4 invalid cells after re-runs", ">20 GPU-hours total"]
 }

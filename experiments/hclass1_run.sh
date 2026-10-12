@@ -288,10 +288,14 @@ C_POINTS="${HCLASS1_C_LEVELS:-8 32 96}"
 
 CAL_CELLS="cal_ar_8 cal_ar_16 cal_ar_32 cal_ar_48 cal_ar_96"
 CONFIRM_CELLS=""
+# Counterbalance per prereg s6: within each (condition, pressure) block the arms
+# ALTERNATE by trial (ar_t1 dspark_t1 ar_t2 dspark_t2 ar_t3 dspark_t3) so a transient
+# drift/driver hiccup is spread across both arms instead of falling on one. Block order
+# A-before-B at each pressure, pressures ascending. Loop: cond -> C -> trial -> arm.
 for cond in A B; do
-  for arm in ar dspark; do
-    for C in $C_POINTS; do
-      for t in 1 2 3; do CONFIRM_CELLS="$CONFIRM_CELLS ${arm}_${cond}_c${C}_t${t}"; done
+  for C in $C_POINTS; do
+    for t in 1 2 3; do
+      CONFIRM_CELLS="$CONFIRM_CELLS ar_${cond}_c${C}_t${t} dspark_${cond}_c${C}_t${t}"
     done
   done
 done
