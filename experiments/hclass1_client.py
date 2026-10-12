@@ -76,20 +76,47 @@ SHORT_CANDS = [t for t in TURNS if 150 <= len(t) < 4000]      # brackets ~50 tok
 LONG_CANDS = [t for t in TURNS if len(t) >= 6000]             # brackets ~2048 tok
 print(f"pools: short={len(SHORT_CANDS)} long={len(LONG_CANDS)}", flush=True)
 
+# ---- chat-template construction (condition A only; deviation D1, prereg s4) ----
+# Raw-completion smoke showed frac_at_max ~1.0 for all classes: Qwen3-4B on a bare
+# token continuation never emits EOS (no conversational end signal), so realized OSL
+# == max_tokens and the "long-output class" axis degenerates to the configured cap.
+# Condition A therefore serves prompts through the model's chat template (user turn +
+# assistant header) — the realistic serving format for an instruct model — with
+# stop_token_ids=[151645] (< |im_end|> = Qwen3 eos_token, vLLM drops it from output),
+# so the model answers and can terminate naturally. Realized ISL is recorded per
+# request; target ISL met within a bracket window (content truncation never cuts the
+# template suffix). Condition B stays raw completions (H-OBS-3 parity).
+def _templated_ids(turn):
+    return TOK.encode(TOK.apply_chat_template(
+        [{"role": "user", "content": turn}], add_generation_prompt=True, tokenize=False),
+        add_special_tokens=False)
+
+EOS_TOKEN_ID = 151645   # < |im_end|> == Qwen3-4B eos_token (verified via tokenizer)
+
 def make_diverse(isl_target, rng):
-    """Pick one real turn bracketing isl_target; truncate to exactly isl_target tokens."""
+    """Pick one real turn whose templated total brackets isl_target; return ids.
+    Truncation (fallback only) shaves content tokens, never the template suffix.
+    Bracket window: [target-8, target+16] so SS/SL stay genuinely distinct (a 34-token
+    prompt would otherwise be accepted for a 50-target and collapse the two classes)."""
     pool = SHORT_CANDS if isl_target <= 64 else LONG_CANDS
-    for _ in range(8):
+    lo_b, hi_b = isl_target - 8, isl_target + 16
+    for _ in range(64):
         t = pool[rng.randrange(len(pool))]
-        ids = TOK.encode(t, add_special_tokens=False)
-        if len(ids) >= isl_target:
-            return ids[:isl_target]
-    # fallback: pad-free concat of two short turns (rare; counted in manifest)
-    ids = []
-    while len(ids) < isl_target:
-        t = SHORT_CANDS[rng.randrange(len(SHORT_CANDS))]
-        ids.extend(TOK.encode(t, add_special_tokens=False))
-    return ids[:isl_target]
+        ids = _templated_ids(t)
+        if lo_b <= len(ids) <= hi_b:
+            return ids
+    # fallback: truncate the drawn turn's content so the templated total fits exactly
+    t = pool[rng.randrange(len(pool))]
+    lo, hi = 16, len(t)
+    best = None
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        ids = _templated_ids(t[:mid])
+        if len(ids) <= isl_target:
+            best, lo = ids, mid + 1
+        else:
+            hi = mid - 1
+    return best if best else _templated_ids(t[:64])
 
 # ---- condition B: reproduce H-OBS-3 canonical prompts EXACTLY (seed 20261011) ----
 def make_canonical(isl_target):
@@ -143,11 +170,16 @@ def stream_one(client, cls, ids, pid):
     ttft = None
     ntok = 0
     text_len = 0
+    payload = {
+        "model": MODEL, "prompt": ids,
+        "max_tokens": cfg["maxtok"], "temperature": 0, "stream": True,
+        "stream_options": {"include_usage": True}}
+    if COND == "A":
+        # chat-templated prompts: stop at the assistant-turn terminator so a natural
+        # answer end is honored (vLLM drops the stop token from output).
+        payload["stop_token_ids"] = [EOS_TOKEN_ID]
     try:
-        with client.stream("POST", base, json={
-                "model": MODEL, "prompt": ids,
-                "max_tokens": cfg["maxtok"], "temperature": 0, "stream": True,
-                "stream_options": {"include_usage": True}}) as r:
+        with client.stream("POST", base, json=payload) as r:
             for line in r.iter_lines():
                 if not line or not line.startswith("data:"):
                     continue

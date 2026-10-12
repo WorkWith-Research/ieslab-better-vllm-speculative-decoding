@@ -95,6 +95,23 @@ assignment is used for AR and DSpark arms (paired by request identity).
   that class's max_tokens is lowered **during harness validation only** (before any confirmatory cell) and
   the change recorded here — this is workload construction, not result-driven tuning.
 
+**Deviation D1 (recorded during harness validation, 2026-10-12; before any confirmatory cell):**
+The first smoke (raw completions, diverse prompts, cache OFF) confirmed distinct prompts and clean
+traces but showed `frac_at_max ≈ 1.0` for SS/SL/LS (LL 0.75) — Qwen3-4B on a *bare token
+continuation* never emits EOS (no conversational end signal), so realized OSL collapses to the
+configured cap and the "long-output class" axis degenerates to the max_tokens setting. This is the
+same degenerate behavior as H-OBS-3, now reproduced with diverse prompts, confirming it is a property
+of raw-completion prompting, not of prompt repetition. Per the clause above, the workload was adjusted
+during harness validation: **condition A serves prompts through the model's chat template**
+(`apply_chat_template`, user turn + assistant header) with `stop_token_ids=[151645]`
+(`< |im_end|>` = Qwen3-4B eos_token; vLLM drops it from output), so answers can terminate naturally.
+Realized ISL is recorded per request (bracket window [target−8, target+16]); realized OSL remains an
+outcome variable. **Condition B is unchanged** (raw completions, H-OBS-3 canonical prompts) and now
+serves a sharper control: it isolates whether the class effect depends on the decode *horizon*
+(realized OSL == cap in B) vs request characteristics under natural termination (A). Condition A's
+prompt manifest records templated ids per pid. This deviation is fixed before any confirmatory cell;
+no threshold or analysis change accompanies it.
+
 **Cache conditions:**
 
 | condition | prefix caching | prompt reuse | purpose |
