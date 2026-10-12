@@ -20,8 +20,8 @@
     "hoobs3_h2_prior": "TPOT-ratio range 35.9% @C32, 43.8% @C96 (confounded: 4 prompts, 97.3% cache hits, OSL==max_tokens 100%)",
     "phase6_crossover": "AR vs DSpark K=7: +66.6% C=8, +13.1% C=32, -2.2% C=64 (CI includes 0)"
   },
-  "retry_count": 0,
-  "failure_reason": null,
+  "retry_count": 3,
+  "failure_reason": "smoke attempts 1-2 failed on harness bugs (bash set -u same-line local self-reference x5; client out-dir not created); attempt 2 also hit a transient CUDA-driver-init race on the 2nd server start (resolved itself: GPU healthy, cuda works on retry). Fixes applied: split locals, mkdir client dirs, settle delays + 1 auto-retry around each server block in smoke+run scripts.",
   "next_autonomous_action": "write experiments/hclass1_client.py (diverse-prompt Poisson client; cond A diverse+cacheOFF / cond B canonical-4+cacheON; identity pairing via prompt-id manifest) + experiments/hclass1_run.sh; smoke on GPU1 at C=8 for ~60s per condition to verify: distinct prompts, EOS behavior (realized OSL < max_tokens in >=2 classes), tracer records, cache-hit rates differ across conditions",
   "hard_stops": ["GPU1 not free -> refuse", "OOM/crash beyond 1 re-run", "in_flight>=2 fraction <0.9", ">4 invalid cells after re-runs", ">20 GPU-hours total"]
 }
