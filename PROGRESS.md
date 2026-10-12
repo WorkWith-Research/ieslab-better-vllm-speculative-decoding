@@ -1071,3 +1071,34 @@ bar: cross-class TPOT-ratio range >15% in both conditions at ≥1 common pressur
 
 **Next:** harness build + smoke validation (diverse-prompt Poisson client, cache on/off modes, per-request
 identity pairing), then calibration → freeze §5b → confirmatory grid.
+
+### 2026-10-13 — H-CLASS-1 COMPLETE: H-OBS-3's class effect does not survive de-confounding (Issue #28)
+Full grid run + analyzed; **41/41 DONE-VALID** (5 cal + 36 confirmatory; 5 cells re-run once each for the
+transient CUDA-driver-init startup race, all passed). Report: `docs/hclass1-results.md`.
+
+- **★ H-C1 FALSIFIED.** The cross-class DSpark/AR TPOT-ratio spread that H-OBS-3 reported (35.9–43.8%) is
+  an artifact of its confounded workload. On the de-confounded diverse-prompt, cache-off condition A the
+  range collapses to **0.57% / 0.48% / 9.69%** (c16/c48/c96) — none reach the 15% bar. The spread only
+  reappears in condition B, which reproduces H-OBS-3's exact config (2 repeated prompts, 97–98% cache hit):
+  37.0 / 41.6 / 42.2%. No common pressure has both conditions >15%, so the replication conjunction fails.
+- **H-C2 VIOLATED at c48/c96.** The *sign* of SD's per-request payoff flips across cache conditions: on A,
+  fixed-K=7 DSpark **hurts** TPOT (ratio 1.16–1.27) at mid/high load; on B the long-horizon classes still
+  **benefit** (LL ratio 0.67/0.75). At c16 all signs agree (SD helps everywhere). SD's payoff sign is not a
+  stable property of request class — it depends on the serving regime (cache/reuse) as much as the class.
+- **H-C3 NOT SUPPORTED — acceptance dominates.** Descriptive OLS (n=18): β_acceptance = **−1.644** vs
+  β_logOSL = −0.117, β_logISL = −0.021. Draft **acceptance rate**, not realized output length, carries the
+  per-request SD payoff. Acceptance nearly doubles from A (~0.33) to B (~0.61) purely via cache reuse making
+  repeated prompts' drafts more predictable — drafter share stays flat (~20%).
+- **Revised Track-A signal:** predict an *acceptance proxy* (content/draftability + cache-hit state) at
+  admission to set per-request K / SD on/off; treat cache state as a first-class feature (it flips the sign).
+  This supersedes H-OBS-3's "predict output length" framing. Condition C (diverse prompts *with* cache) is
+  the deferred follow-up that would split the joint diversity+cache effect.
+- **Tooling fixes this phase:** `parse_cell()` regex `\d`→`[0-9]` (invalid in bash POSIX ERE; latent whole-grid
+  bug); §5b lambda table frozen into `lookup_lambda`; counterbalanced arm-alternating cell order; **deviation
+  D3** — condition-A validity now gates on applied load (issued arrivals, no dropped queue) + a service-aware
+  completion floor (`SAT_REQ_RATE=0.35`), replacing the arrival-rate floor that over-predicted ~4× under
+  saturation and would have false-rejected every P_high cell; analyzer metric-key fix (`..._d` not
+  `...[counter]_d`) so acceptance + cache-hit rates populate.
+
+**H-CLASS-1 is now closed** (H-C1 falsified, H-C2 violated at mid/high load, H-C3 acceptance-dominant). Full
+report: `docs/hclass1-results.md`; prereg deviations D1/D2/D3 in `docs/hclass1-prereg.md`. Issue #28 → Done.

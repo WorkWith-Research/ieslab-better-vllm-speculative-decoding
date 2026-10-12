@@ -1,7 +1,7 @@
 {
   "updated_utc": "2026-10-13T00:40:00Z",
   "active_hypothesis": "H-CLASS-1: native fixed-K=7 DSpark's per-request latency payoff varies systematically by observable request characteristics (realized OSL, ISL, content/draftability) under realistic heterogeneous serving; H-OBS-3's class effect must be re-tested de-confounded",
-  "current_task": "confirmatory grid FIRST PASS complete (31/36 valid; 5 cells failed on transient CUDA-driver-init race at server startup); pre-specified one-attempt re-run of the 5 in flight as proc_dad6f8d4f532 (GPU0, ~35min). Then analyze -> verdict -> results doc.",
+  "current_task": "H-CLASS-1 COMPLETE + analyzed + reported (docs/hclass1-results.md). H-C1 FALSIFIED, H-C2 VIOLATED (c48/c96), H-C3 acceptance-dominant. Issue #28 -> Done.",
   "checkpoint_commit": "abadaaf",
   "issue": 28,
   "project_item_id": "PVTI_lADOEyEOMs4Bl95-zhAIokA",
@@ -19,8 +19,14 @@
     "counterbalance: confirmatory loop now cond->C->trial->arm so arms ALTERNATE within each block (ar_t1 dspark_t1 ar_t2 dspark_t2 ...) per prereg s6"
   ],
   "experiment_manifest": {
-    "calibration": {"status": "COMPLETE", "cells": ["cal_ar_8", "cal_ar_16", "cal_ar_32", "cal_ar_48", "cal_ar_96"], "note": "all 5 VALID under D3 (cal_ar_96 ok=128/issued=324/dropped=0 passes applied-load gate); proc_f38c337b52d9 exited 0"},
-    "confirmatory": {"status": "running", "cells": "arm{ar,dspark} x cond{A,B} x pressure{P_low,P_med,P_high} x 3 trials = 36, counterbalanced"}
+    "calibration": {"status": "COMPLETE", "cells": ["cal_ar_8", "cal_ar_16", "cal_ar_32", "cal_ar_48", "cal_ar_96"], "note": "all 5 VALID under D3"},
+    "confirmatory": {"status": "COMPLETE", "cells": "arm{ar,dspark} x cond{A,B} x pressure{P_low,P_med,P_high} x 3 trials = 36, counterbalanced; 5 cells re-run once (transient CUDA-init race), all valid -> 41/41 DONE-VALID"}
+  },
+  "verdict": {
+    "H_C1": "FALSIFIED — cond A cross-class range 0.57%/0.48%/9.69% (c16/48/96, none >15%); cond B 37.0/41.6/42.2% (all >15%); no common pressure both >15%",
+    "H_C2": "VIOLATED at c48/c96 — SD payoff sign flips across A/B (A uniformly +/hurts, B long-classes -/helps); stable only at c16",
+    "H_C3": "NOT SUPPORTED — OLS n=18 beta_acc=-1.644 dominant vs beta_logOSL=-0.117, beta_logISL=-0.021; acceptance (not OSL) drives the payoff",
+    "headline": "H-OBS-3's per-class SD-payoff spread is a cache-reuse/draft-quality artifact, not an output-length mechanism; revised Track-A signal = predict acceptance proxy + cache state at admission"
   },
   "frozen_pressure_points_s5b": {
     "P_low": {"C": 16, "lambda": 0.5714, "regime": "running-limited no queue (running p50=16, waiting frac>0=0.000)"},
