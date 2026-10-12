@@ -11,6 +11,7 @@ GitHub Project: https://github.com/orgs/WorkWith-Research/projects/1 (projectV2 
 | `PVTI_lADOEyEOMs4Bl95-zg-9neU` | #3 | Phase 2: Analysis — oracle gap for dynamic K | Done |
 | `PVTI_lADOEyEOMs4Bl95-zg-9nfY` | #4 | Phase 3: Prototype — per-request dynamic-K controller + live validation | Done |
 | `PVTI_lADOEyEOMs4Bl95-zg_JZ9c` | #10 | Phase 4: Realistic-workload validation — load, SPEED-Bench, heterogeneous ISL/OSL, DSpark | In progress |
+| `PVTI_lADOEyEOMs4Bl95-zhAIokA` | #28 | H-CLASS-1: Request-class-dependent speculation economics under realistic heterogeneous serving | In progress |
 
 **Current Phase-4 checkpoint:** Phase 4.1 saturation characterization, Phase 4.2 fixed-K × load, Phase 4.3 SPEED-Bench long-prefill validation, Phase 4.4 heterogeneous ISL×OSL (H-4.4a/b FALSIFY — see docs/phase4-p44-results.md), and Phase 4.5 DSpark-rule vs LDM are complete. Phase 4.6 live-load-aware adaptive speculation is running (rev-#4, unified SPS curve).
 
@@ -1041,3 +1042,32 @@ remove the floor; but the experiment located its mechanism, which is the durable
 **Phase 5 is now closed** (H-5.1 falsified, H-5.2 falsified with mechanism located). Full report:
 `docs/p52-results.md`; prereg §6 closed with a dated completion note. Tooling committed (P1 @6ec6288,
 P3 @ed4d252); this entry + results doc + prereg close = final commit.
+
+### 2026-10-12 — New directive: request-aware serving scheduling; H-CLASS-1 opened (Issue #28)
+Directive "From Speculative Decoding Characterization to Request-Aware Serving Scheduling" received at
+checkpoint `3fb1273`. State sync: local == remote, no post-checkpoint work, GPUs free. All 10
+directive-listed docs read.
+
+**Deliverable 1 — Phase 5.2 scope note (`docs/p52-scope-note.md`, @055cf36):** dated claim-scope
+correction per directive §9. The tested P3 mechanism was force-0 truncation + drafter-pass skip (M3),
+NOT the prereg §5 metadata/static-field modifications — which were verified no-ops in eager mode before
+P3, so zero §5 fields were removed (prereg's own fallback clause satisfied). FALSIFIED verdict preserved
+verbatim; scope boundary fixed: the ~8–9% floor constant holds for vLLM 0.19.1/ngram/eager only and must
+not be transferred to native DSpark/vLLM 0.25.0 without measurement.
+
+**Deliverable 2 — H-CLASS-1 preregistration (`docs/hclass1-prereg.md`, @055cf36, Issue #28 created +
+project item `PVTI_...zhAIokA` In progress).** Step-1 audit of the H-OBS-3 workload (client code + raw
+records) found three confounds: (1) 4 canonical prompts at 97.3% prefix-cache hit rate — prompt identity/
+content/cache fully confounded with class; (2) **realized OSL == configured max_tokens for 100% of
+requests in every class/cell** (frac_at_max = 1.000, zero natural-EOS terminations despite the "NATURAL
+EOS" docstring — synthetic turn-concatenation prompts have no stopping point), so H-OBS-3's class effect
+is on (ISL, configured decode horizon), not natural output length; (3) all-at-once open-loop decay makes
+C=96 non-steady. De-confounded design: diverse distinct real ShareGPT-V3 prompts per class (seeded,
+disjoint, identity-paired across arms), natural EOS on real turns, Poisson arrivals at calibration-frozen
+rates; cache condition A (diverse + cache OFF, primary) and B (H-OBS-3's 4 canonical prompts + cache ON,
+control); AR-only calibration → frozen P_low/P_med/P_high before the confirmatory grid; 36-cell grid
+(arm{AR, DSpark-K7} × condition{A,B} × pressure{3} × 3 trials), trial-level inference. H-C1 replication
+bar: cross-class TPOT-ratio range >15% in both conditions at ≥1 common pressure.
+
+**Next:** harness build + smoke validation (diverse-prompt Poisson client, cache on/off modes, per-request
+identity pairing), then calibration → freeze §5b → confirmatory grid.

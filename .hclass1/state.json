@@ -1,0 +1,27 @@
+{
+  "updated_utc": "2026-10-12T00:00:00Z",
+  "active_hypothesis": "H-CLASS-1: native fixed-K=7 DSpark's per-request latency payoff varies systematically by observable request characteristics (realized OSL, ISL, content/draftability) under realistic heterogeneous serving; H-OBS-3's class effect must be re-tested de-confounded",
+  "current_task": "harness-build: diverse-prompt Poisson client + launcher (condition A/B), smoke validation, then calibration",
+  "checkpoint_commit": "055cf36",
+  "issue": 28,
+  "project_item_id": "PVTI_lADOEyEOMs4Bl95-zhAIokA",
+  "prereg": "docs/hclass1-prereg.md",
+  "scope_note": "docs/p52-scope-note.md",
+  "worktree": "/home/junior1/_dev/dspark-native-validation (branch track-b-live-sd, rev recorded per cell)",
+  "gpu": "GPU1 only (H-OBS-3 convention); port 8402",
+  "experiment_manifest": {
+    "calibration": {"status": "pending", "cells": ["ar_A_c8", "ar_A_c16", "ar_A_c32", "ar_A_c48", "ar_A_c96"], "purpose": "freeze P_low/P_med/P_high into prereg s5b"},
+    "confirmatory": {"status": "pending-after-calibration", "cells": "arm{ar,dspark} x cond{A,B} x pressure{P_low,P_med,P_high} x 3 trials = 36"}
+  },
+  "completed_cells": [],
+  "pending_cells": ["calibration (5)", "confirmatory (36)"],
+  "job_ownership": {"active_jobs": [], "lock": "/tmp/hclass1_gpu1.lock"},
+  "latest_validated_results": {
+    "hoobs3_h2_prior": "TPOT-ratio range 35.9% @C32, 43.8% @C96 (confounded: 4 prompts, 97.3% cache hits, OSL==max_tokens 100%)",
+    "phase6_crossover": "AR vs DSpark K=7: +66.6% C=8, +13.1% C=32, -2.2% C=64 (CI includes 0)"
+  },
+  "retry_count": 0,
+  "failure_reason": null,
+  "next_autonomous_action": "write experiments/hclass1_client.py (diverse-prompt Poisson client; cond A diverse+cacheOFF / cond B canonical-4+cacheON; identity pairing via prompt-id manifest) + experiments/hclass1_run.sh; smoke on GPU1 at C=8 for ~60s per condition to verify: distinct prompts, EOS behavior (realized OSL < max_tokens in >=2 classes), tracer records, cache-hit rates differ across conditions",
+  "hard_stops": ["GPU1 not free -> refuse", "OOM/crash beyond 1 re-run", "in_flight>=2 fraction <0.9", ">4 invalid cells after re-runs", ">20 GPU-hours total"]
+}
