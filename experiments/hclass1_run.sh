@@ -38,14 +38,16 @@ gpu_free() {
 }
 
 # ---- cell parsing: cal_ar_32 | ar_A_c32_t1 ---------------------------------
+# NOTE: bash [[ =~ ]] is POSIX ERE — \d is NOT a valid class (it matches nothing);
+# use [0-9]. A broken regex here fails the WHOLE grid with "unparseable cell label".
 parse_cell() { # sets P_ARM P_COND P_C P_TRIAL P_LAMBDA P_DUR
   local cell=$1
-  if [[ $cell =~ ^cal_(ar)_(\d+)$ ]]; then
+  if [[ $cell =~ ^cal_(ar)_([0-9]+)$ ]]; then
     P_ARM="ar"; P_COND="A"; P_C="${BASH_REMATCH[2]}"; P_TRIAL=0
     P_LAMBDA=$(python3 -c "print(round(${BASH_REMATCH[2]}/28.0, 4))")
     P_DUR=90; return 0
   fi
-  if [[ $cell =~ ^(ar|dspark)_([AB])_c(\d+)_t([123])$ ]]; then
+  if [[ $cell =~ ^(ar|dspark)_([AB])_c([0-9]+)_t([123])$ ]]; then
     P_ARM="${BASH_REMATCH[1]}"; P_COND="${BASH_REMATCH[2]}"
     P_C="${BASH_REMATCH[3]}"; P_TRIAL="${BASH_REMATCH[4]}"
     # lambda per pressure: filled from frozen s5b table (see LAMBDA_TABLE below)
