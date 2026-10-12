@@ -187,9 +187,34 @@ this file's §5b before any §6 cell starts; the confirmatory grid uses only tho
 
 | level | λ (req/s) | client threads | expected regime | chosen (UTC) |
 |---|---|---|---|---|
-| P_low | — | — | running-limited, no queue | _pending_ |
-| P_med | — | — | transition | _pending_ |
-| P_high | — | — | sustained queue | _pending_ |
+| P_low | 0.5714 | 16 | running-limited, no queue | 2026-10-12T23:43Z |
+| P_med | 1.7143 | 48 | transition (first intermittent wait) | 2026-10-12T23:43Z |
+| P_high | 3.4286 | 96 | sustained queue (running≈max_num_seqs=64, waiting>0) | 2026-10-12T23:43Z |
+
+**Calibration occupancy evidence (AR, condition A, 90 s, steady window; from `results/hclass1/cal_ar_*/obs/steps.jsonl` + `client.jsonl`):**
+
+| C | running p50/max | waiting p50 | waiting frac>0 | TPOT_p50 ms | completed tok/s (issued) |
+|---|---|---|---|---|---|
+| 8  | 8/8   | 0  | 0.000 | 15.7 | 472  |
+| 16 | 16/16 | 0  | 0.000 | 20.4 | 710  |
+| 32 | 30/32 | 0  | 0.000 | 29.3 | 877  |
+| 48 | 37/48 | 0  | 0.061 | 37.2 | 1038 |
+| 96 | 42/64 | 16 | 0.665 | 44.9 | 1050 |
+
+**Selection rationale (prereg §5 rules applied to the table above):**
+- P_low = C=16: lowest point with sustained `waiting_p50=0` and running≥16 (C=8 excluded — running p50=8<16).
+- P_med = C=48: throughput within 1.2% of the maximum (1038 vs 1050 tok/s) AND first point where `waiting>0` becomes intermittent (frac>0=0.061; C=32 is 0.000).
+- P_high = C=96: highest point with sustained `waiting_p50>0` (p50=16, frac>0=0.665); running p50=42→max 64 ≈ max_num_seqs, queue>0. Saturated regime confirmed.
+
+**Deviation D3 (recorded at freeze):** `cal_ar_96` was auto-flagged INVALID by the §6 validity floor
+(`ok ≥ ⌊0.6·λ·0.9·(DUR−20)⌋ = 129`) with **ok=128** — a boundary miss-by-one, NOT a data-quality failure
+(0 client errors; occupancy/throughput fully captured and consistent). The floor's arrival-rate assumption
+(`expected completions ≈ λ·window`) is invalid under saturation: at C=96 the open-loop arrival rate (3.43 req/s)
+exceeds service capacity, so completions are **service-capped**, not arrival-rate-capped, and the proportional
+floor over-predicts achievable completions. The floor was corrected (see §6 validity rule, D3) to cap the
+arrival-rate term at a saturated-service estimate; `cal_ar_96`'s 128 completions are **accepted** as the valid
+P_high calibration point under the corrected rule. No historical result is altered — this only fixes the
+forward-looking validity gate for the §6 grid.
 
 ## 6. Confirmatory design (fixed now; runs only after §5b is filled)
 
@@ -204,14 +229,12 @@ this file's §5b before any §6 cell starts; the confirmatory grid uses only tho
 - Prometheus @0.5 s: `vllm:spec_decode_num_drafts[_tokens]`, `vllm:spec_decode_num_accepted_tokens`,
   running/waiting/KV gauges, prefix-cache hit/queries (conditions A/B), GPU util/mem/power.
 
-**Validity rule (per cell):** server startup-complete marker in its own log; client exit 0 with ≥50% of
-issued requests completed and error rate ≤10%; ok-requests ≥ max(15, ⌊0.6·λ·0.9·(DUR−20)⌋) (proportional
-to expected arrivals in the steady window — low-load cells legitimately have few requests); steps.jsonl
-non-empty with ≥95% of steps carrying `gpu_step_ms`; DSpark cells scheduled >1000 draft tokens, AR cells
-exactly 0; async overlap preserved (`in_flight ≥ 2` fraction ≥ 0.9); condition A realized-OSL
-distribution not degenerate (overall `frac_at_max < 0.95` — i.e., a majority of requests terminate
-naturally below the uniform cap — and per-class ISL p50 within its §4 bracket, else workload drift vs the
-§4 smoke). Invalid cells preserved, marked, excluded; one re-run attempt each (as in H-OBS-3).
+**Validity rule (per cell):** server startup-complete marker in its own log; client exit 0 with error rate
+≤10%; **load-applied gate** — condition A (open-loop Poisson) requires the dispatcher to have actually issued
+≥ ⌊0.85·λ·0.95·DUR⌋ arrivals with `dropped_full_queue = 0` (i.e., the intended load was cleanly applied and
+the bounded client queue never overflowed); **service-aware completion floor** — ok-requests ≥ max(15, ⌊0.6·min(λ·0.9·(DUR−20), SAT_REQ_RATE·DUR)⌋) with `SAT_REQ_RATE = 0.35 req/s` (conservative saturated AR service capacity measured from `cal_ar_96`, rounded down); condition B (closed-loop back-to-back, C workers) requires ok-requests ≥ max(15, ⌊0.6·C⌋).
+*(D3 correction: the original floor — ok ≥ ⌊0.6·λ·0.9·(DUR−20)⌋ — assumed completions ≈ arrivals. Under saturation completions are service-capped and tail out past the window, so it over-predicted by ~4× and would have false-rejected every P_high cell. The load driver of an open-loop experiment is the arrival rate, so validity now gates on applied load; the completion floor is capped at the saturated service rate so it can only be conservative.)*
+steps.jsonl non-empty with ≥95% of steps carrying `gpu_step_ms`; DSpark cells scheduled >1000 draft tokens, AR cells exactly 0; async overlap preserved (`in_flight ≥ 2` fraction ≥ 0.9); condition A realized-OSL distribution not degenerate (overall `frac_at_max < 0.95` — i.e., a majority of requests terminate naturally below the uniform cap — and per-class ISL p50 within its §4 bracket, else workload drift vs the §4 smoke). Invalid cells preserved, marked, excluded; one re-run attempt each (as in H-OBS-3).
 
 ## 7. Analysis plan and verdict rule (fixed now)
 

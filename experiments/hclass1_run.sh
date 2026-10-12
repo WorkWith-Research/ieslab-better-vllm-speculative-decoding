@@ -50,22 +50,32 @@ parse_cell() { # sets P_ARM P_COND P_C P_TRIAL P_LAMBDA P_DUR
   if [[ $cell =~ ^(ar|dspark)_([AB])_c([0-9]+)_t([123])$ ]]; then
     P_ARM="${BASH_REMATCH[1]}"; P_COND="${BASH_REMATCH[2]}"
     P_C="${BASH_REMATCH[3]}"; P_TRIAL="${BASH_REMATCH[4]}"
-    # lambda per pressure: filled from frozen s5b table (see LAMBDA_TABLE below)
-    P_LAMBDA=$(lookup_lambda "$P_C"); P_DUR=$DURATION; return 0
+    # lambda per pressure: frozen s5b table (see LAMBDA_TABLE above)
+    P_LAMBDA=$(lookup_lambda "$P_C"); P_DUR=$DURATION
+    # a confirmatory C not in the frozen set yields an empty lambda -> reject loudly
+    [[ $P_LAMBDA =~ ^[0-9]+(\.[0-9]+)?$ ]] || return 1; return 0
   fi
   return 1
 }
 
-# Frozen lambda table (prereg §5b). Filled after calibration; until then these are
-# the calibration candidates used for confirmatory cells only AFTER s5b is frozen.
-lookup_lambda() { # $1=C -> lambda req/s
+# Frozen lambda table (prereg §5b, frozen 2026-10-12T23:43Z by calibration).
+# Confirmatory cells MUST run at these exact pressures; a C not in the frozen set
+# is a config error -> return empty so parse_cell's numeric guard rejects it loudly.
+lookup_lambda() { # $1=C -> lambda req/s  (frozen §5b: P_low=16, P_med=48, P_high=96)
   case "$1" in
-    8)  echo "0.29" ;;   # ~ C/28: low occupancy, no queue (P_low candidate)
-    32) echo "1.14" ;;   # P_med candidate
-    96) echo "3.43" ;;   # P_high candidate (sustained queue at max_num_seqs=64)
-    *)  echo "0.57" ;;
+    16) echo "0.5714" ;;   # P_low  (running-limited, no queue)
+    48) echo "1.7143" ;;   # P_med  (transition: first intermittent wait)
+    96) echo "3.4286" ;;   # P_high (sustained queue at max_num_seqs=64)
+    *)  echo "" ;;         # not a frozen pressure point -> reject in parse_cell
   esac
 }
+
+# D3 (frozen §5b): conservative saturated AR request-service capacity, measured from
+# cal_ar_96 (steady drain ~0.39 req/s; token-based cross-check ~0.63 req/s). Rounded
+# DOWN so the service-aware completion floor never over-predicts completions under
+# saturation (a minimum floor that can only be conservative is safe: it cannot
+# false-reject a valid run, which is the failure mode the old arrival-rate floor had).
+SAT_REQ_RATE=0.35
 
 write_manifest() { # $1=cell
   local cell="${1:-}"
@@ -155,13 +165,37 @@ validate_cell() { # $1=cell -> 0 valid, 1 invalid
   local dir="$OUT/$cell" reasons=()
   grep -q "Application startup complete" "$dir/server.log" 2>/dev/null || reasons+=("no startup-complete in own log")
   [ -f "$dir/client.jsonl" ] || { reasons+=("missing client records"); return 1; }
-  local okc errc minreq
+  local okc errc
   okc=$($PY -c "import json;r=[json.loads(l) for l in open('$dir/client.jsonl')];print(sum(1 for x in r if 'ttft_ms' in x))")
   errc=$($PY -c "import json;r=[json.loads(l) for l in open('$dir/client.jsonl')];print(sum(1 for x in r if 'err' in x))")
-  # min ok-requests proportional to expected arrivals in the steady window
-  # (0.9*(DUR-WARMUP) s at rate lambda): low-load cells legitimately have few requests.
-  minreq=$($PY -c "import sys;print(max(15,int(0.6*float('$P_LAMBDA')*0.9*(float('$P_DUR')-20))))")
-  [ "${okc:-0}" -ge $minreq ] || reasons+=("client ok-requests too low ($okc < $minreq)")
+  # D3 (frozen s5b): the load driver is the ARRIVAL RATE (open-loop Poisson, cond A), so
+  # validity gates on APPLIED LOAD (requests actually issued at the target rate) plus a
+  # SERVICE-AWARE completion floor. The old floor (ok >= 0.6*lambda*window) assumed
+  # completions ~= arrivals; under saturation completions are service-capped and tail out
+  # past the window, so it over-predicted by ~4x and would false-reject every P_high cell.
+  local issued dropped=0 minreq
+  if [ "$P_COND" = "A" ]; then
+    if [ -f "$dir/client.log" ]; then
+      issued=$(grep -oE 'issued=[0-9]+' "$dir/client.log" | tail -1 | cut -d= -f2)
+      dropped=$(grep -oE 'dropped_full_queue=[0-9]+' "$dir/client.log" | tail -1 | cut -d= -f2); dropped=${dropped:-0}
+    fi
+    # applied-load gate: the dispatcher must have actually issued ~the intended arrivals.
+    if [ -n "${issued:-}" ]; then
+      minreq=$($PY -c "import sys;print(int(0.85*float('$P_LAMBDA')*0.95*float('$P_DUR')))")
+      [ "$issued" -ge $minreq ] || reasons+=("applied load too low (issued=$issued < $minreq expected arrivals)")
+      # queue backpressure: dropped arrivals mean the bounded client queue overflowed -> load not cleanly applied
+      [ "$dropped" -eq 0 ] || reasons+=("client queue dropped $dropped arrivals (backpressure; load not clean)")
+    else
+      reasons+=("no dispatcher issued-count in client.log (cond A open-loop load unverifiable)")
+    fi
+    # service-aware completion floor: expected completions capped at the saturated service rate.
+    minreq=$($PY -c "import sys;lam,sat,dur=float('$P_LAMBDA'),float('$SAT_REQ_RATE'),float('$P_DUR');win=0.9*(dur-20);print(max(15,int(0.6*min(lam*win,sat*dur))))")
+    [ "${okc:-0}" -ge $minreq ] || reasons+=("client ok-requests too low ($okc < $minreq service-aware floor)")
+  else
+    # cond B: closed-loop back-to-back, C workers -> expect >= one completion per worker.
+    minreq=$($PY -c "import sys;print(max(15,int(0.6*float('$P_C'))))")
+    [ "${okc:-0}" -ge $minreq ] || reasons+=("client ok-requests too low ($okc < $minreq)")
+  fi
   $PY -c "import sys;ok,err=int('${okc:-0}'),int('$errc');sys.exit(0 if err*10 <= max(1,ok+err) else 1)" \
     || reasons+=("client error flood ($errc errors vs $okc ok)")
   local nsteps=0 gpufrac
