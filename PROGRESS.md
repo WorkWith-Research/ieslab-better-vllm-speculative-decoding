@@ -11,7 +11,7 @@ GitHub Project: https://github.com/orgs/WorkWith-Research/projects/1 (projectV2 
 | `PVTI_lADOEyEOMs4Bl95-zg-9neU` | #3 | Phase 2: Analysis — oracle gap for dynamic K | Done |
 | `PVTI_lADOEyEOMs4Bl95-zg-9nfY` | #4 | Phase 3: Prototype — per-request dynamic-K controller + live validation | Done |
 | `PVTI_lADOEyEOMs4Bl95-zg_JZ9c` | #10 | Phase 4: Realistic-workload validation — load, SPEED-Bench, heterogeneous ISL/OSL, DSpark | In progress |
-| `PVTI_lADOEyEOMs4Bl95-zhAIokA` | #28 | H-CLASS-1: Request-class-dependent speculation economics under realistic heterogeneous serving | In progress |
+| `PVTI_lADOEyEOMs4Bl95-zhAIokA` | #28 | H-CLASS-1: Request-class-dependent speculation economics under realistic heterogeneous serving | Done |
 
 **Current Phase-4 checkpoint:** Phase 4.1 saturation characterization, Phase 4.2 fixed-K × load, Phase 4.3 SPEED-Bench long-prefill validation, Phase 4.4 heterogeneous ISL×OSL (H-4.4a/b FALSIFY — see docs/phase4-p44-results.md), and Phase 4.5 DSpark-rule vs LDM are complete. Phase 4.6 live-load-aware adaptive speculation is running (rev-#4, unified SPS curve).
 
@@ -1102,3 +1102,33 @@ transient CUDA-driver-init startup race, all passed). Report: `docs/hclass1-resu
 
 **H-CLASS-1 is now closed** (H-C1 falsified, H-C2 violated at mid/high load, H-C3 acceptance-dominant). Full
 report: `docs/hclass1-results.md`; prereg deviations D1/D2/D3 in `docs/hclass1-prereg.md`. Issue #28 → Done.
+
+### 2026-10-13 — H-CLASS-1C follow-up: diverse queries + shared cached context (prefix caching ON)
+- **Motivation:** H-C2's violation flagged a joint diversity+cache effect; condition C splits it. Fixed question
+  (prereg `docs/hclass1c-prereg.md`, written before any cell ran): does a diverse-query workload with a *shared
+  cached context document* sit closer to A (content-driven acceptance gap) or B (reuse-state effect)? Since prefix
+  caching changes no logits, the A↔B acceptance gap must be content, reuse-state, or both.
+- **Workload:** one shared ~552-tok ShareGPT context doc as a system message (byte-identical prefix across all
+  2000 bank entries, LCP=546 tok verified) + distinct diverse queries; S=doc+short (~600), L=doc+long (~2600);
+  uniform cap 2048, stop at `<|im_end|>`. Prefix caching ON (the one difference from A). `build_hclass1_c_bank.py`
+  → `data/hclass1_c_bank.jsonl` (local).
+- **Run:** 18 cells (arm {AR, DSpark-K7} × c{16,48,96} × 3 trials), counterbalanced, frozen §5b λ, GPU0.
+  **18/18 DONE-VALID, zero invalids** (no re-runs needed). Wall ≈ 1.5 h for the 17-cell grid.
+- **Condition sanity:** prefix-cache hit rate 0.327/0.230/0.230 (c16/c48/c96) — between A (~0) and B (0.976);
+  >5% validity guard passed everywhere. Hit rate falls with concurrency (prefix eviction), yet acceptance is flat.
+- **VERDICT: C≈A (content-driven gap).** Trial-mean dspark acceptance: c16=0.304, c48=0.303, c96=0.315 — within
+  0.029 of A's 0.332 at every pressure, ~0.30 below B's 0.611. Cross-class TPOT-ratio range 7.58/5.67/10.73% (all
+  <15%), mirroring A (0.57/0.48/9.69%) and contrasting B (37.0/41.6/42.2%). Prereg bands → `near_a` true,
+  `near_b` false. **Caching a shared prefix does not lift acceptance or restore the class spread.**
+- **Interpretation:** H-OBS-3's "class effect" and the ~0.33→0.61 acceptance jump come from B's *specific repeated
+  prompts being more draftable*, confounded with repetition — not a reusable cache state. C's acceptance even sits
+  slightly below A's (extra context length / longer answers), reinforcing that content, not cache, drives it.
+- **Refined Track-A signal (supersedes the H-CLASS-1 note):** the admission-time predictor should target an
+  *acceptance proxy from prompt content/draftability* (perplexity/entropy features of query+context); treat cache
+  state as a *cost* feature (TTFT/prefill savings), not a *quality* feature. The pressure-dependent sign flip of SD's
+  payoff (helps c16, mildly hurts c48/c96) reproduces across A and C — that part is real and content-independent.
+- **Causal limit (prereg §5):** within C the shared document and "longer richer prompt" are not separable; a
+  cache-ON diverse *no-shared-doc* control would split them (not run, out of scope). Regression claims descriptive.
+- **Harness:** `experiments/hclass1_client.py` (COND=C open-loop path), `hclass1_run.sh` (cache ON for C + >5%
+  hit-rate validity guard; `HCLASS1_CONDS`/`HCLASS1_C_LEVELS`), `hclass1_analyze.py` (`SCHEME["C"]`, `condition_c`
+  verdict block). Committed `8d964e2`. Full report: `docs/hclass1c-results.md`.
