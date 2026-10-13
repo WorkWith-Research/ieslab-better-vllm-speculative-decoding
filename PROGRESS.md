@@ -1163,3 +1163,30 @@ report: `docs/hclass1-results.md`; prereg deviations D1/D2/D3 in `docs/hclass1-p
   decision model should ingest serving state (queue/running/load) + a traffic-class label.
 - **Deliverables:** `docs/tracka-results.md`; harness `experiments/tracka_collect.py` + `tracka_train.py`
   (committed `ed3209f`); labels local under `results/tracka/`. Issue #29 → Done.
+
+### 2026-10-13 — Scheduler-signal validation: load-regime × traffic-class SD on/off policy
+- **Question:** does the two-axis signal implied by Track A's negative result (load regime = sign, traffic class =
+  level) actually beat single-axis policies on the measured payoff surface? Pure analysis of existing H-CLASS-1
+  A/B/C data — no new GPU runs.
+- **Measured payoff surface** (per-request SD payoff = mean(1−DSparkTPOT/ARTPOT), pid-matched, over t=1,2,3):
+
+  | cond \ load | c16 | c48 | c96 |
+  |---|---:|---:|---:|
+  | A diverse | +0.122 | −0.157 | −0.156 |
+  | B high-reuse | +0.477 | +0.121 | +0.022 |
+  | C shared-doc | +0.109 | −0.172 | −0.186 |
+
+  Two independent load-bearing axes: **load** flips A/C from + (c16) to − (c48/c96); **traffic class** keeps B
+  positive at every load (acceptance ~0.61 vs ~0.33 rescues DSpark even at c96).
+- **VERDICT: SUPPORTED.** The rule "SD-on iff low-load OR high-reuse-class" matches the oracle on **all 9 cells** —
+  captures 100% of achievable gain, zero regret (request-weighted, n=5389). Every single-axis alternative is worse:
+  class-only 90.3% (misses Ac16/Cc16), load-only 67.0% (misses Bc48/Bc96), always-on 51.3%, always-off 0%. Both axes
+  are necessary — each covers a different half of the surface; only their disjunction is complete. Confirms the
+  scheduler should ingest serving state (load) + a coarse traffic-class label, not per-request content.
+- **Honest scope limits:** (i) same-data validation — internal-consistency/design confirmation, NOT a held-out
+  generalization test (needs new cells: c32/c64, more classes, other draft/target pairs); (ii) Bc96 is a marginal
+  boundary cell (+0.022, n1530) — matches oracle but with ~no margin; treat |payoff|<~0.03 as "indifferent";
+  (iii) payoff at fixed K=7 — structure expected to hold if K becomes a control input, but the exact boundary should
+  be re-checked.
+- **Deliverable:** `docs/scheduler-signal-validation.md`. No new project item (design-validation analysis, not a
+  preregistered experiment); logged here + in the doc.
