@@ -47,7 +47,7 @@ parse_cell() { # sets P_ARM P_COND P_C P_TRIAL P_LAMBDA P_DUR
     P_LAMBDA=$(python3 -c "print(round(${BASH_REMATCH[2]}/28.0, 4))")
     P_DUR=90; return 0
   fi
-  if [[ $cell =~ ^(ar|dspark)_([AB])_c([0-9]+)_t([123])$ ]]; then
+  if [[ $cell =~ ^(ar|dspark)_([ABC])_c([0-9]+)_t([123])$ ]]; then
     P_ARM="${BASH_REMATCH[1]}"; P_COND="${BASH_REMATCH[2]}"
     P_C="${BASH_REMATCH[3]}"; P_TRIAL="${BASH_REMATCH[4]}"
     # lambda per pressure: frozen s5b table (see LAMBDA_TABLE above)
@@ -91,7 +91,7 @@ def rev(path):
 spec = [] if arm == "ar" else [
   "--speculative-config",
   '{"method": "dspark", "model": "deepseek-ai/dspark_qwen3_4b_block7", "num_speculative_tokens": 7}']
-cache_on = (cond == "B")
+cache_on = cond in ("B", "C")
 m = {
   "cell": cell, "arm": arm, "condition": cond, "C": int(C), "trial": int(trial),
   "lambda_req_s": float(lam), "duration_s": int(dur), "warmup_s": 20, "seed": 20261013,
@@ -106,8 +106,9 @@ m = {
            "VLLM_OBS_TRACE": f"{out}/{cell}/obs"},
   "workload": {"client":"hclass1_client.py","cond":cond,
                "classes": ({"S":[50,2048],"L":[2048,2048]} if cond=="A"
+                           else {"S":[600,2048],"L":[2600,2048]} if cond=="C"
                            else {"SS":[50,256],"SL":[50,1024],"LS":[2048,256],"LL":[2048,1024]}),
-               "arrival":"poisson" if cond=="A" else "back-to-back-rr",
+               "arrival":"poisson" if cond in ("A","C") else "back-to-back-rr",
                "lambda_req_s": float(lam), "greedy": True, "ignore_eos": False,
                "condA_stop_token_ids":[151645]},
   "sd_expected": ("off" if arm == "ar" else "on"),
@@ -126,7 +127,7 @@ start_server() { # $1=cell -> sets SRV_PID
   [ "$P_ARM" = "dspark" ] && export VLLM_TB_MODE=native
   local spec_args=() cache_arg
   [ "$P_ARM" = "dspark" ] && spec_args=(--speculative-config '{"method": "dspark", "model": "deepseek-ai/dspark_qwen3_4b_block7", "num_speculative_tokens": 7}')
-  if [ "$P_COND" = "B" ]; then cache_arg=--enable-prefix-caching; else cache_arg=--no-enable-prefix-caching; fi
+  if [ "$P_COND" = "B" ] || [ "$P_COND" = "C" ]; then cache_arg=--enable-prefix-caching; else cache_arg=--no-enable-prefix-caching; fi
   export CUDA_VISIBLE_DEVICES=$GPU PORT=$PORT
   cd "$ENV"
   setsid .venv/bin/python -m vllm.entrypoints.openai.api_server \
@@ -174,7 +175,7 @@ validate_cell() { # $1=cell -> 0 valid, 1 invalid
   # completions ~= arrivals; under saturation completions are service-capped and tail out
   # past the window, so it over-predicted by ~4x and would false-reject every P_high cell.
   local issued dropped=0 minreq
-  if [ "$P_COND" = "A" ]; then
+  if [ "$P_COND" = "A" ] || [ "$P_COND" = "C" ]; then
     if [ -f "$dir/client.log" ]; then
       issued=$(grep -oE 'issued=[0-9]+' "$dir/client.log" | tail -1 | cut -d= -f2)
       dropped=$(grep -oE 'dropped_full_queue=[0-9]+' "$dir/client.log" | tail -1 | cut -d= -f2); dropped=${dropped:-0}
@@ -234,6 +235,19 @@ print(round(hi/max(1,len(recs)),3))")
     $PY -c "import sys;sys.exit(0 if float('$of')>=0.9 else 1)" \
       || reasons+=("async overlap broken (in_flight>=2 fraction $of < 0.9)")
   fi
+  # C-specific guard (prereg docs/hclass1c-prereg.md §4): the shared context doc D must actually be
+  # served from the prefix cache, else the cell does not test "diverse queries + shared cached context".
+  # Parse the vLLM 'Prefix cache hit rate: X%' log lines (median of last 20) and require >5%.
+  if [ "$P_COND" = "C" ] && [ -f "$dir/server.log" ]; then
+    local ch; ch=$($PY -c "
+import re
+vals=[float(m.group(1)) for line in open('$dir/server.log',errors='ignore')
+      for m in [re.search(r'Prefix cache hit rate:\s*([\d.]+)%',line)] if m]
+tail=sorted(vals[-20:])
+print(tail[len(tail)//2] if tail else 0.0)")
+    $PY -c "import sys;sys.exit(0 if float('$ch')>5.0 else 1)" \
+      || reasons+=("prefix cache not effectively used (hit rate ${ch}% <= 5%; shared doc D not cached -> wrong condition)")
+  fi
   if [ ${#reasons[@]} -eq 0 ]; then return 0; else log "INVALID $cell: ${reasons[*]}"; return 1; fi
 }
 
@@ -292,7 +306,8 @@ CONFIRM_CELLS=""
 # ALTERNATE by trial (ar_t1 dspark_t1 ar_t2 dspark_t2 ar_t3 dspark_t3) so a transient
 # drift/driver hiccup is spread across both arms instead of falling on one. Block order
 # A-before-B at each pressure, pressures ascending. Loop: cond -> C -> trial -> arm.
-for cond in A B; do
+# HCLASS1_CONDS restricts to a subset (e.g. "C" for the condition-C follow-up only).
+for cond in ${HCLASS1_CONDS:-A B}; do
   for C in $C_POINTS; do
     for t in 1 2 3; do
       CONFIRM_CELLS="$CONFIRM_CELLS ar_${cond}_c${C}_t${t} dspark_${cond}_c${C}_t${t}"
@@ -307,7 +322,7 @@ log "=== H-CLASS-1 run set: $(echo $CELLS | wc -w) cells requested ==="
 for cell in $CELLS; do
   parse_cell "$cell" || { log "FATAL: unparseable cell label '$cell'"; exit 1; }
   if [ $DRY -eq 1 ]; then
-    cache="off"; [ "$P_COND" = "B" ] && cache="on"
+    cache="off"; { [ "$P_COND" = "B" ] || [ "$P_COND" = "C" ]; } && cache="on"
     echo "[dry-run] $cell -> arm=$P_ARM cond=$P_COND C=$P_C lambda=$P_LAMBDA dur=${P_DUR}s cache=$cache"
     continue
   fi

@@ -23,6 +23,11 @@ SCHEME = {
     "B": {"classes": ["SS", "SL", "LS", "LL"],
           "maxtok": {"SS": 256, "SL": 1024, "LS": 256, "LL": 1024},
           "isl": {"SS": 50, "SL": 50, "LS": 2048, "LL": 2048}},
+    # Condition C (follow-up, docs/hclass1c-prereg.md): diverse distinct queries + ONE shared cached
+    # context doc (system msg), prefix caching ON. Same 2 ISL classes as A but realized ISL = shared
+    # doc (~552 tok) + query; uniform output cap 2048.
+    "C": {"classes": ["S", "L"], "maxtok": {"S": 2048, "L": 2048},
+          "isl": {"S": 600, "L": 2600}},
 }
 # Pressure levels: filled by calibration (prereg §5b); overridable via HCLASS1_C_LEVELS.
 C_LEVELS = ([int(x) for x in os.environ.get("HCLASS1_C_LEVELS", "").split(",") if x.strip()]
@@ -97,7 +102,7 @@ def mean(xs):
 # ---------------------------------------------------------------------------
 report = {"cells": {}, "per_class": {}, "verdict_inputs": {}}
 
-for cond in ("A", "B"):
+for cond in ("A", "B", "C"):
     for arm in ("ar", "dspark"):
         cels = cells_matching(f"{arm}_{cond}_c")
         for cell in cels:
@@ -200,7 +205,7 @@ def paired_ratio_ci(cond, C, cls, n_boot=2000):
     return {"n_paired": n, "mean": round(mean(ratios), 4),
             "ci95": [round(boots[int(0.025 * n_boot)], 4), round(boots[int(0.975 * n_boot)], 4)]}
 
-for cond in ("A", "B"):
+for cond in ("A", "B", "C"):
     for C in C_LEVELS:
         row = {}
         for cls in SCHEME[cond]["classes"]:
@@ -264,6 +269,61 @@ def ols_hc3():
 
 report["verdict_inputs"]["h_c3_ols"] = ols_hc3()
 
+# ---- Condition-C verdict (docs/hclass1c-prereg.md §5): does a diverse-query workload with a shared
+# cached context sit closer to A (content-driven gap) or B (reuse-state effect)? ----
+def c_verdict():
+    # frozen anchors from the closed H-CLASS-1 run (prereg C §1)
+    A_ACC, B_ACC = 0.332, 0.611
+    rng = os.environ.get("HCLASS1_C_LEVELS", "16,48,96") or "16,48,96"
+    clv = [int(x) for x in rng.split(",") if x.strip()]
+    acc_by_c, range_by_c, hit_by_c = {}, {}, {}
+    for C in clv:
+        # trial-mean acceptance over the 3 dspark trials (steady-window metric)
+        acs = []
+        for t in (1, 2, 3):
+            c = report["cells"].get(f"dspark_C_c{C}_t{t}", {})
+            if c.get("acceptance_rate") is not None:
+                acs.append(c["acceptance_rate"])
+        if acs:
+            acc_by_c[C] = round(mean(acs), 4)
+        row = report.get("ratios", {}).get(f"C_c{C}", {})
+        if isinstance(row, dict) and "_cross_class_range_pct" in row:
+            range_by_c[C] = row["_cross_class_range_pct"]
+        hits = []
+        for t in (1, 2, 3):
+            c = report["cells"].get(f"dspark_C_c{C}_t{t}", {})
+            if c.get("prefix_cache_hit_rate") is not None:
+                hits.append(c["prefix_cache_hit_rate"])
+        if hits:
+            hit_by_c[C] = round(mean(hits), 4)
+    out = {"anchors": {"A_acc": A_ACC, "B_acc": B_ACC},
+           "C_acc_by_pressure": acc_by_c, "C_cross_class_range_pct_by_pressure": range_by_c,
+           "C_cache_hit_rate_by_pressure": hit_by_c}
+    if not acc_by_c:
+        out["verdict"] = "NO DATA (no valid C cells)"
+        return out
+    # fixed bands (prereg §5): near_a = acceptance within 0.05 of A AND range <15% everywhere;
+    # near_b = acceptance within 0.05 of B OR range >15% at any pressure.
+    acc_near_a = all(abs(v - A_ACC) <= 0.05 for v in acc_by_c.values())
+    acc_near_b = any(abs(v - B_ACC) <= 0.05 for v in acc_by_c.values())
+    range_all_lt15 = (range_by_c is not None and range_by_c != {}) and all(r < 15 for r in range_by_c.values())
+    range_any_gt15 = bool(range_by_c) and any(r > 15 for r in range_by_c.values())
+    near_a = acc_near_a and (range_all_lt15 if range_by_c else False)
+    near_b = acc_near_b or range_any_gt15
+    if near_a and not near_b:
+        out["verdict"] = ("C~A (content-driven gap): the A<->B acceptance gap is a content-distribution "
+                          "effect; caching a shared prefix does not by itself lift acceptance or restore "
+                          "the class spread.")
+    elif near_b and not near_a:
+        out["verdict"] = ("C~B (reuse-state effect): shared-context reuse lifts draft acceptance / restores "
+                          "class-dependent payoff even under query diversity; cache/reuse state is a genuine "
+                          "causally-available admission feature.")
+    else:
+        out["verdict"] = ("INTERMEDIATE: partial mediation. Report magnitudes (C_acc, hit rate, range).")
+    return out
+
+report["verdict_inputs"]["condition_c"] = c_verdict()
+
 out = os.path.join(RESULTS, "analysis.json")
 os.makedirs(RESULTS, exist_ok=True)
 json.dump(report, open(out, "w"), indent=2)
@@ -275,7 +335,7 @@ lines.append("## Per-cell summary")
 lines.append("| cell | cond | arm | n_steady | tok/s | running p50/max | waiting frac>0 | prefill share | acc rate | cache hit% (metrics) |")
 lines.append("|---|---|---|---:|---:|---|---:|---:|---:|---:|")
 for cell, c in sorted(report["cells"].items()):
-    m = re.match(r"(ar|dspark)_([AB])_c(\d+)_t(\d+)", cell)
+    m = re.match(r"(ar|dspark)_([ABC])_c(\d+)_t(\d+)", cell)
     cond = m.group(2) if m else "?"
     arm = "AR" if (m and m.group(1) == "ar") else "DS"
     ch = c.get("prefix_cache_hit_rate")
@@ -288,7 +348,7 @@ for cell, c in sorted(report["cells"].items()):
     lines.append(f"\n### {cell}")
     lines.append("| class | n | TTFT p50/p95 ms | TPOT p50/p95 ms | E2E p50/p95 s | ntok p10/p50/p90 | frac_at_max |")
     lines.append("|---|---:|---|---|---|---|---:|")
-    m = re.match(r"(ar|dspark)_([AB])_c(\d+)_t(\d+)", cell)
+    m = re.match(r"(ar|dspark)_([ABC])_c(\d+)_t(\d+)", cell)
     cls_list = SCHEME[m.group(2)]["classes"] if m else []
     for cls in cls_list:
         pc = c.get("per_class", {}).get(cls)

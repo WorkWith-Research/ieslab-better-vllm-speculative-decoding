@@ -68,8 +68,17 @@ CLASSES_B = {
 }
 ORDER_B = ["SS", "SL", "LS", "LL"]
 
-CLASSES = CLASSES_A if COND == "A" else CLASSES_B
-ORDER = ORDER_A if COND == "A" else ORDER_B
+# Condition C (follow-up, prereg docs/hclass1c-prereg.md): DIVERSE distinct queries + ONE shared
+# context document (system message) that every request caches; prefix caching ON. Same ISL classes
+# as A (S/L) but realized ISL = shared doc (~552 tok) + query. Reuses A's open-loop Poisson path.
+CLASSES_C = {
+    "S": {"isl": 600, "maxtok": 2048},
+    "L": {"isl": 2600, "maxtok": 2048},
+}
+ORDER_C = ["S", "L"]
+
+CLASSES = CLASSES_A if COND in ("A", "C") else CLASSES_B
+ORDER = ORDER_A if COND in ("A", "C") else ORDER_B
 
 TOK = AutoTokenizer.from_pretrained(TOK_MODEL, trust_remote_code=True)
 
@@ -192,40 +201,42 @@ print("canonical (cond B) prompt lens:", {c: len(v) for c, v in CANON.items()}, 
 # ---- build the request stream ----------------------------------------------
 rng = random.Random(SEED)
 requests = []   # list of (cls, ids, pid)
-if COND == "A":
-    # Condition A uses a PRE-TEMPLATED diverse prompt bank (data/hclass1_prompt_bank.jsonl,
-    # built by experiments/build_hclass1_prompt_bank.py): 10000 S + 10000 L prompts, each a
-    # distinct real ShareGPT-V3 turn chat-templated and truncated into its ISL bracket.
-    # Loading pre-tokenized ids is fast (no per-prompt template encoding at client start) and
-    # deterministic: we shuffle the bank with SEED and draw unique prompts in order, so every
-    # request gets a distinct prompt id and AR/DSpark arms share the same seeded assignment.
-    BANK = "/home/junior1/_dev/better-vllm-speculative-decoding/data/hclass1_prompt_bank.jsonl"
-    bank = {"S": [], "L": []}
+if COND in ("A", "C"):
+    # Condition A / C use a PRE-TEMPLATED diverse prompt bank (data/hclass1_prompt_bank.jsonl for A,
+    # data/hclass1_c_bank.jsonl for C), built by the matching build_hclass1_*_bank.py. Each entry is a
+    # distinct real ShareGPT-V3 turn chat-templated and truncated into its ISL bracket (C additionally
+    # prepends one shared context document as the system message -> a byte-identical cacheable prefix).
+    # Loading pre-tokenized ids is fast and deterministic: shuffle the bank with SEED, draw unique
+    # prompts in order, so every request gets a distinct prompt id and AR/DSpark arms share the same
+    # seeded assignment (paired by identity).
+    BANK = ("/home/junior1/_dev/better-vllm-speculative-decoding/data/hclass1_c_bank.jsonl" if COND == "C"
+            else "/home/junior1/_dev/better-vllm-speculative-decoding/data/hclass1_prompt_bank.jsonl")
+    bank = {c: [] for c in ORDER}
     for l in open(BANK):
         e = json.loads(l)
         if e["cls"] in bank:
             bank[e["cls"]].append(e["ids"])
-    for c in ("S", "L"):
+    for c in ORDER:
         if not bank[c]:
             raise SystemExit(f"prompt bank missing/empty for class {c}: {BANK}")
     n_est = int(LAMBDA * DURATION * 1.6) + CONCURRENCY * 4
     # per-class draw cursors over a seeded shuffle of the bank (unique prompts, no in-run reuse)
-    order = {c: list(range(len(bank[c]))) for c in ("S", "L")}
-    for c in ("S", "L"):
+    order = {c: list(range(len(bank[c]))) for c in ORDER}
+    for c in ORDER:
         rng.shuffle(order[c])
     # hard guard: never silently cycle a class's bank within one run (would repeat prompts,
     # breaking the no-reuse condition and correlating acceptance across requests).
     max_draws = -(-n_est // len(ORDER))   # ceil(n_est / n_classes)
-    for c in ("S", "L"):
+    for c in ORDER:
         if max_draws > len(bank[c]):
             raise SystemExit(f"prompt bank too small for class {c}: need {max_draws} unique "
                              f"prompts, bank has {len(bank[c])} — increase the bank or lower load")
-    cursor = {"S": 0, "L": 0}
+    cursor = {c: 0 for c in ORDER}
     for k in range(n_est):
         cls = ORDER[k % len(ORDER)]
         ids = bank[cls][order[cls][cursor[cls] % len(bank[cls])]]
         cursor[cls] += 1
-        pid = f"A{SEED}_{k:06d}"
+        pid = f"{COND}{SEED}_{k:06d}"
         requests.append((cls, ids, pid))
 elif COND == "B":
     # H-OBS-3 pattern: each worker round-robins the 4 class slots (2 distinct prompts) back-to-back.
@@ -250,7 +261,7 @@ def stream_one(client, cls, ids, pid):
         "model": MODEL, "prompt": ids,
         "max_tokens": cfg["maxtok"], "temperature": 0, "stream": True,
         "stream_options": {"include_usage": True}}
-    if COND == "A":
+    if COND in ("A", "C"):
         # chat-templated prompts: stop at the assistant-turn terminator so a natural
         # answer end is honored (vLLM drops the stop token from output).
         payload["stop_token_ids"] = [EOS_TOKEN_ID]
@@ -340,7 +351,7 @@ QMAX = 2048   # bounded arrival queue (backpressure proxy); drops counted by dis
 t0[0] = time.monotonic()
 stop_at[0] = t0[0] + DURATION
 
-if COND == "A":
+if COND in ("A", "C"):
     q = _queue.Queue(maxsize=QMAX)
     th_d = threading.Thread(target=dispatcher, args=(q,), daemon=True)
     ths = [threading.Thread(target=worker_a, args=(i, q)) for i in range(CONCURRENCY)]
@@ -361,7 +372,7 @@ with open(OUT, "w") as f:
     for r in recs:
         f.write(json.dumps(r) + "\n")
 
-if MANIFEST and COND == "A":
+if MANIFEST and COND in ("A", "C"):
     with open(MANIFEST, "w") as f:
         seen = {}
         for cls, ids, pid in requests:
