@@ -12,7 +12,7 @@ GitHub Project: https://github.com/orgs/WorkWith-Research/projects/1 (projectV2 
 | `PVTI_lADOEyEOMs4Bl95-zg-9nfY` | #4 | Phase 3: Prototype — per-request dynamic-K controller + live validation | Done |
 | `PVTI_lADOEyEOMs4Bl95-zg_JZ9c` | #10 | Phase 4: Realistic-workload validation — load, SPEED-Bench, heterogeneous ISL/OSL, DSpark | In progress |
 | `PVTI_lADOEyEOMs4Bl95-zhAIokA` | #28 | H-CLASS-1: Request-class-dependent speculation economics under realistic heterogeneous serving | Done |
-| `PVTI_lADOEyEOMs4Bl95-zhAcqK4` | #29 | Phase 5: Content-based per-request acceptance predictor (Track A) | In progress |
+| `PVTI_lADOEyEOMs4Bl95-zhAcqK4` | #29 | Phase 5: Content-based per-request acceptance predictor (Track A) | Done |
 
 **Current Phase-4 checkpoint:** Phase 4.1 saturation characterization, Phase 4.2 fixed-K × load, Phase 4.3 SPEED-Bench long-prefill validation, Phase 4.4 heterogeneous ISL×OSL (H-4.4a/b FALSIFY — see docs/phase4-p44-results.md), and Phase 4.5 DSpark-rule vs LDM are complete. Phase 4.6 live-load-aware adaptive speculation is running (rev-#4, unified SPS curve).
 
@@ -1133,3 +1133,33 @@ report: `docs/hclass1-results.md`; prereg deviations D1/D2/D3 in `docs/hclass1-p
 - **Harness:** `experiments/hclass1_client.py` (COND=C open-loop path), `hclass1_run.sh` (cache ON for C + >5%
   hit-rate validity guard; `HCLASS1_CONDS`/`HCLASS1_C_LEVELS`), `hclass1_analyze.py` (`SCHEME["C"]`, `condition_c`
   verdict block). Committed `8d964e2`. Full report: `docs/hclass1c-results.md`.
+
+### 2026-10-13 — Phase 5 / Track A (Issue #29): content-based per-request acceptance predictor
+- **Question:** can per-request DSpark-K7 draft acceptance be predicted from admission-time prompt
+  features, and does that prediction have decision value for per-request SD on/off?
+- **Method (prereg `docs/tracka-prereg.md`, bands fixed first):** 550 prompts labeled at concurrency=1 via
+  `spec_decode_num_{draft,accepted}_tokens_total` counter deltas (exact per-request attribution, NO vLLM patch —
+  licensed by H-CLASS-1C's measured acceptance load-invariance). set1 = 400/400 valid (diverse; primary),
+  set2 = 150/150 valid (shared-doc cache probe). Features: isl, unigram entropy, bigram/trigram repetition,
+  prompt perplexity (free via `prompt_logprobs`), cache hit rate. Models B0/B1/M1/M2 (ridge + GBT), 5-fold CV
+  prompt-disjoint folds.
+- **Deviation D1:** this vLLM build's `prefix_cache_{queries,hits}_total` counters don't tick per request
+  (frozen at startup; isolated probe) → per-request cache_hit_rate unattributable (2/150 non-null in set2).
+  H-TA2 under-powered (reported, not forced); spec-decode counters (the label source) verified exact.
+- **VERDICT: H-TA1 NOT SUPPORTED.** M2 5-fold CV R² = 0.055 (B1 length-only 0.008; ΔR² +0.047 < the 0.10 bar).
+  Content features add a small real signal over length, but ~95% of per-request acceptance variance is unexplained
+  by cheap admission-time statistics. Per-prompt acceptance: mean 0.315, sd 0.070, range 0.14–0.62.
+- **H-TA2 INVARIENT (weak):** ΔMAE(M1→M2+cache) = 0.00027 < 0.003 — cache not a quality feature; consistent with
+  H-CLASS-1C's workload-level invariance (the load-bearing evidence).
+- **H-TA3 NOT SUPPORTED.** On the existing H-CLASS-1 A+C paired per-request data (n=2011): Spearman(pred_acc,
+  SD payoff) = 0.041; control Spearman(true ISL, payoff) = 0.033 — even ground-truth length is ~uncorrelated with
+  which requests benefit. Threshold policy beats always-on/off at 0/3 loads. Mean payoff is a LOAD property
+  (+0.116 @c16, −0.165/−0.172 @c48/c96), not a per-request one.
+- **Interpretation (revises the Track-A signal twice over):** (i) the A↔B acceptance gap was a *population*
+  effect (two prompt distributions), not per-request spread — "predict this request's acceptance" is the wrong
+  framing; (ii) within diverse traffic, individual acceptance is high-variance and driven by fine-grained local
+  predictability our coarse features miss. **Revised scheduler signal: set SD on/off + K from LOAD REGIME (sign)
+  + coarse TRAFFIC CLASS / prompt-distribution (expected level), not per-request perplexity.** A lightweight
+  decision model should ingest serving state (queue/running/load) + a traffic-class label.
+- **Deliverables:** `docs/tracka-results.md`; harness `experiments/tracka_collect.py` + `tracka_train.py`
+  (committed `ed3209f`); labels local under `results/tracka/`. Issue #29 → Done.
