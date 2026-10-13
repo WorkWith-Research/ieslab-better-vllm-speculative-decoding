@@ -87,6 +87,26 @@ draft models is out of scope.
 attributable); N < 400 after exclusions; any post-hoc feature/model/window change after this file
 is committed.
 
+## 4b. Deviation D1 (recorded during collection, 2026-10-13) — per-request cache state unavailable
+
+The engine's `vllm:prefix_cache_queries_total` / `_hits_total` counters do NOT update per request on
+this vLLM build (frozen at their startup value across many requests in an isolated probe, while the
+`spec_decode_num_{draft,accepted}_tokens_total` counters update correctly). Therefore per-request
+`cache_hit_rate` cannot be attributed via counter deltas.
+
+Consequences:
+- **H-TA2 (cache invariance) is UNTESTABLE as written** and is reported as such, not forced. This is
+  acceptable because H-CLASS-1C already established at the *workload* level that acceptance is flat
+  across cache conditions (hit rate ~0 → 0.976 while per-request acceptance stays ~0.30–0.33). The
+  per-request confirmation was a nice-to-have, not load-bearing.
+- `cache_hit_rate` in M2 is set to 0 for all rows (no information); on SET 1 (all distinct prompts, no
+  reuse) it carries no variance anyway, so **M2 ≡ M1 on the primary H-TA1 test**. The primary verdict
+  therefore rests on M1's content features + prompt_ppl; this does not weaken H-TA1 (the question is
+  whether *content* predicts acceptance).
+
+The spec-decode draft/accept counters (the load-bearing label source) were verified correct in the smoke
+test (per-request deltas match expected magnitudes; mean acceptance ≈ A anchor). No other deviation.
+
 ## 5. Provenance (filled after run)
 
 - Collection: `experiments/tracka_collect.py` → `results/tracka/labels_{set1,set2}.jsonl` (local).
