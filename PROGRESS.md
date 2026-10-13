@@ -12,6 +12,7 @@ GitHub Project: https://github.com/orgs/WorkWith-Research/projects/1 (projectV2 
 | `PVTI_lADOEyEOMs4Bl95-zg-9nfY` | #4 | Phase 3: Prototype — per-request dynamic-K controller + live validation | Done |
 | `PVTI_lADOEyEOMs4Bl95-zg_JZ9c` | #10 | Phase 4: Realistic-workload validation — load, SPEED-Bench, heterogeneous ISL/OSL, DSpark | In progress |
 | `PVTI_lADOEyEOMs4Bl95-zhAIokA` | #28 | H-CLASS-1: Request-class-dependent speculation economics under realistic heterogeneous serving | Done |
+| `PVTI_lADOEyEOMs4Bl95-zhAcqK4` | #29 | Phase 5: Content-based per-request acceptance predictor (Track A) | In progress |
 
 **Current Phase-4 checkpoint:** Phase 4.1 saturation characterization, Phase 4.2 fixed-K × load, Phase 4.3 SPEED-Bench long-prefill validation, Phase 4.4 heterogeneous ISL×OSL (H-4.4a/b FALSIFY — see docs/phase4-p44-results.md), and Phase 4.5 DSpark-rule vs LDM are complete. Phase 4.6 live-load-aware adaptive speculation is running (rev-#4, unified SPS curve).
 
