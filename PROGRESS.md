@@ -1190,3 +1190,21 @@ report: `docs/hclass1-results.md`; prereg deviations D1/D2/D3 in `docs/hclass1-p
   be re-checked.
 - **Deliverable:** `docs/scheduler-signal-validation.md`. No new project item (design-validation analysis, not a
   preregistered experiment); logged here + in the doc.
+
+### 2026-10-14 — H-CLASS-1D: held-out load-boundary validation of the scheduler signal
+- **Question:** does the 2-axis rule's load axis hold OUT OF SAMPLE? Probe the A/C sign-flip interval at two
+  intermediate pressures (c32 = boundary midpoint, c64 = deep-mid control), condition A. Prereg
+  `docs/hclass1d-prereg.md` frozen first; same λ=C/28 mapping extended to c32→1.1429, c64→2.2857 (documented
+  extension of the frozen table, not re-calibration).
+- **Result:** all 4 cells DONE-VALID (c32 in 2 trials since t1 sat just outside the ±0.03 ambiguity band).
+  Held-out payoffs: **A-c32 = −0.041** (t1 −0.037 / t2 −0.045, n=208), **A-c64 = −0.126** (n=120). Full A load
+  curve now monotone-decreasing: c16 +0.122 → c32 −0.041 → c48 −0.157 → c64 −0.126 → c96 −0.157.
+- **VERDICT: SUPPORTED** (prereg §5: p32 ≤ 0 and p64 < 0). The A/C load boundary lies in [c16, c32]; the rule's
+  "low-load = {c16}" is correct — no threshold update. The load axis generalizes out of sample, upgrading the
+  prior same-data design-validation to a held-out result. Boundary has a real margin (−0.041, not near-zero).
+- **Scope limits:** condition A only (B positive at all loads, C mirrors A); c64 single-trial (control, far from
+  0); fixed K=7 (validates existence/sign of the load flip, not an absolute threshold).
+- **Incidents:** HF API rate-limit on first launch → relaunched offline (HF_HUB_OFFLINE=1, models cached); one
+  transient CUDA-driver wedge (orphaned EngineCore procs from failed boots) recovered by killing orphans, no GPU
+  reset. Both lessons recorded in the vllm-serving-experiments skill.
+- **Deliverable:** `docs/hclass1d-results.md`. No new project item (held-out confirmation of an existing finding).
