@@ -171,9 +171,9 @@ t0[0] = time.monotonic()
 stop_at[0] = t0[0] + DURATION
 q = _queue.Queue(maxsize=4096)
 th_d = threading.Thread(target=dispatcher, args=(q,), daemon=True)
-ths = [threading.Thread(target=worker_a, args=(i, q)) for i in range(CONCURRENCY)]
+ths = [threading.Thread(target=worker_a, args=(i, q), daemon=True) for i in range(CONCURRENCY)]
 if PHASE == "MIX":
-    ths += [threading.Thread(target=worker_b, args=(i,)) for i in range(CONCURRENCY)]
+    ths += [threading.Thread(target=worker_b, args=(i,), daemon=True) for i in range(CONCURRENCY)]
 th_d.start()
 for th in ths:
     th.start()
