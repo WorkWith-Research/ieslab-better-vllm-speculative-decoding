@@ -34,8 +34,9 @@ gpu_free() {
 }
 gpu_free || { echo "FATAL: GPU$GPU not free"; exit 1; }
 
-start_server() { # $1=name $2=mode   (mode in dspark|on|loadonly|classonly|live)
-  local name="$1" mode="$2" dir="$OUT/$name"
+start_server() { # $1=cell $2=mode   (mode in native|on|loadonly|classonly|live)
+  local cell="$1" mode="$2"
+  local dir="$OUT/$cell"   # separate statement: all words of a `local` line expand before any assignment takes effect (set -u); also avoid the reserved parameter name
   unset VLLM_TB_MODE VLLM_OBS_TRACE 2>/dev/null || true
   export VLLM_TB_MODE=$mode
   export VLLM_TB_TRACE="$dir/trace.jsonl"; rm -f "$VLLM_TB_TRACE"
@@ -85,7 +86,7 @@ run_cell() { # $1=arm_name $2=mode $3=conc $4=rep
   done
   cd "$ENV" && timeout $((DURATION + 90)) .venv/bin/python "$REPO/experiments/phase7_mixed_client.py" \
     $PORT $DURATION $conc $BLOCKS "$dir/client.jsonl" $SEED MIX > "$dir/client.log" 2>&1
-  local rc=$?
+  rc=$?   # no `local` here: it would expand $? before the local builtin runs
   echo "  $cell client rc=$rc"
   sleep 3; stop_server; sleep 8
   # incremental per-cell save
