@@ -1228,3 +1228,29 @@ requests (externality), and the spec path carries a fixed overhead only a schedu
 remove. Both point to **batch/workload-regime-level control** — exactly the signal later validated in H-CLASS-1 /
 scheduler-signal-validation / H-CLASS-1D. Phase 4 therefore closes as the *measurement foundation* for the
 capstone (Phase 6: load×class live SD controller). Issue #10 → Done; project item updated.
+
+### 2026-10-14 — Phase 7 (capstone) SPEC: request-aware SD scheduler from live serving state
+- **Goal:** turn the *validated* 2-axis signal into a *working in-loop controller* and show realized end-to-end
+  serving gain — the original mission made concrete. Prereg: `docs/phase7-capstone-prereg.md` (design + success/falsification
+  frozen; [CAL] block filled from a smoke step before any controller trial).
+- **Key discovery:** Track B already built the live per-step SD on/off *mechanism* in the isolated v0.25.0 worktree
+  (`sd_enabled` V2 patch, causal-verification logging OFF⇒0 drafts, probe-based re-entry; 20 tests passing). The capstone
+  **reuses that mechanism and swaps only the trigger** — Track B's reactive TPOT-trend rule → the validated 2-axis rule.
+- **Controller:** `sd_enabled ← load_LOW OR class_HIGHREUSE` per scheduling step, measured inputs only (no hardcoded
+  concurrency): load signal = KV-usage/occupancy (continuous; deliberately NOT the schedule()-cadence signal Track B
+  Defect 2 showed decouples from GPU time under async scheduling); class signal = rolling draft-acceptance ratio
+  (load-invariant → carries class, not load). Orthogonal by construction — the same orthogonality that beat single-axis
+  on the payoff surface. Hysteresis/probe/cooldown reused from Track B; cold start ON.
+- **Workload (capstone-specific):** MIXED traffic alternating diverse (A/C-like) and high-reuse (B-like) blocks across
+  three applied loads (c16/c48/c96, frozen λ=C/28) — a homogeneous workload cannot test a 2-axis rule. Prediction:
+  CTRL-LIVE ON in high-reuse-at-high-load (class rescues) and OFF in diverse-at-mid/high (load), the live analog of the
+  payoff-surface cells.
+- **Arms:** AR / DSpark-K7 / CTRL-ON (overhead) / CTRL-LOADONLY / CTRL-CLASSONLY / CTRL-LIVE. The two single-axis arms
+  are the capstone addition — S3 tests "both axes necessary" END-TO-END, not just statically.
+- **Success (frozen):** S1 crossover recovery (≥AR within CI + >DSpark-K7 2/3 rounds at high-load diverse); S2 low-load
+  preservation; S3 CTRL-LIVE beats BOTH single-axis arms in aggregate realized gain; S4 overhead ≤1%; S5 causal
+  verification passes. Falsified if S1 or S3 fail beyond uncertainty (one revision only on harness bug).
+- **Open design questions (resolve by smoke test before freezing [CAL]):** (1) which load signal separates c16/c48/c96
+  cleanest without tracking schedule() cadence; (2) whether acceptance-with-decay across OFF periods is stable enough or
+  needs a prefix-cache-hit-rate secondary proxy. Recorded as findings if non-discriminating, not silent retunes.
+- **Status:** SPEC only — no runs yet. Next: smoke step to fill [CAL], then the comparison run set.
