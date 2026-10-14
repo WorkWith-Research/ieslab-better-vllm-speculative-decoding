@@ -61,12 +61,16 @@ parse_cell() { # sets P_ARM P_COND P_C P_TRIAL P_LAMBDA P_DUR
 # Frozen lambda table (prereg §5b, frozen 2026-10-12T23:43Z by calibration).
 # Confirmatory cells MUST run at these exact pressures; a C not in the frozen set
 # is a config error -> return empty so parse_cell's numeric guard rejects it loudly.
-lookup_lambda() { # $1=C -> lambda req/s  (frozen §5b: P_low=16, P_med=48, P_high=96)
+lookup_lambda() { # $1=C -> lambda req/s  (frozen §5b: P_low=16, P_med=48, P_high=96; + held-out c32/c64)
   case "$1" in
     16) echo "0.5714" ;;   # P_low  (running-limited, no queue)
     48) echo "1.7143" ;;   # P_med  (transition: first intermittent wait)
     96) echo "3.4286" ;;   # P_high (sustained queue at max_num_seqs=64)
-    *)  echo "" ;;         # not a frozen pressure point -> reject in parse_cell
+    # Held-out load-boundary probes (prereg docs/hclass1d-prereg.md §2): same lambda=C/28 relationship
+    # as the frozen points, extended to two intermediate pressures — NOT a re-calibration.
+    32) echo "1.1429" ;;   # between P_low and P_med (boundary probe)
+    64) echo "2.2857" ;;   # between P_med and P_high (deep-mid control)
+    *)  echo "" ;;         # not a known pressure point -> reject in parse_cell
   esac
 }
 
