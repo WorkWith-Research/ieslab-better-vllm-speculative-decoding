@@ -36,8 +36,10 @@ M-BATCH-1 does exactly that, with the identical workload family S3 used.
   0.5 else class B (one of the 4 canonical high-reuse prompts, round-robin over arrival index). Workers = C
   (48/96, matching H-CLASS-1 cond-A concurrency), closed-loop over a FIFO queue, so at c48/c96 arrivals back up
   and **B requests decode in batches alongside in-flight/queued A requests** — the mixed-batch regime under test. Prefix caching ON (B signal requires it).
-  This *relaxes* S3's block-alternating closed-loop MIX (whose B blocks starved B of completion slots: zero
-  completed B-class requests in every 45 s S3 cell — see prereg §7) while keeping the same traffic families.
+  This *relaxes* S3's block-alternating closed-loop MIX (whose 45 s cells captured only 3–14
+  completions per cell — too few for a paired per-class payoff; B completions ranged 0–10, not zero:
+  an earlier "zero B" reading was a classifier bug counting `cls.startswith("B")` when class names
+  carry no prefix — see §7) while keeping the same traffic families.
 - **Duration:** 150 s per cell (hclass1 convention; ≥3 valid reps per load). WARMUP 10 s excluded from analysis.
 - **Server:** Qwen3-4B + dspark_qwen3_4b_block7 (K=7), TP=1, GPU0, gpu-mem-util 0.90, max-num-seqs 64,
   max-num-batched-tokens 4096 — identical to S3 and H-CLASS-1.
@@ -86,6 +88,10 @@ as untested — not re-run with changed parameters).
 
 ## 7. Honest scope / known confounds
 
+- **Classifier bug (caught during bring-up):** class names carry no "B" prefix (hclass1 convention: A = S/L,
+  B = SS/SL/LS/LL), so `cls.startswith("B")` counts zero. All M-BATCH-1 scripts classify by membership in
+  {SS, SL, LS, LL}. The same bug affected an earlier reading of S3 raw data ("zero completed B requests");
+  the correct S3 counts are 0–10 B completions per 45 s cell — still too few for paired payoff, but not zero.
 - This stream is **not** byte-identical to S3's block-alternating MIX (S3's B blocks were closed-loop hammers;
   here B arrivals are Poisson at half rate). It keeps the same traffic families (diverse A bank + canonical B
   prompts), the same server, and the same mixed-batch regime — but it is a *different workload realization*, so

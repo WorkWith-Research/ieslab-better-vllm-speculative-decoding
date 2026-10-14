@@ -86,8 +86,9 @@ import json, sys
 recs = [json.loads(l) for l in open(sys.argv[1])]
 ok = [r for r in recs if "tpot_ms" in r]
 err = len(recs) - len(ok)
-bA = sum(1 for r in ok if r["cls"].startswith("A"))
-bB = sum(1 for r in ok if r["cls"].startswith("B"))
+BCLS = {"SS", "SL", "LS", "LL"}   # B-class names have no "B" prefix (hclass1 convention)
+bA = sum(1 for r in ok if r["cls"] not in BCLS)
+bB = sum(1 for r in ok if r["cls"] in BCLS)
 print(len(ok), err, bA, bB)
 EOF
 )

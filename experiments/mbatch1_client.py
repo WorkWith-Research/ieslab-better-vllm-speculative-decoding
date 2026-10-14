@@ -189,8 +189,9 @@ def pct(xs, p):
     xs = sorted(xs); kx = max(0, min(len(xs)-1, int(round(p/100*(len(xs)-1)))))
     return xs[kx]
 print(f"ok={len(ok)} err={len(recs)-len(ok)} warmup_s={WARMUP}")
-for grp in ("A", "B"):
-    rg = [r for r in ok if r["cls"].startswith(grp)]
+BCLS = {"SS", "SL", "LS", "LL"}   # B-class names have no "B" prefix (hclass1 convention)
+for grp, pred in (("A", lambda c: c not in BCLS), ("B", lambda c: c in BCLS)):
+    rg = [r for r in ok if pred(r["cls"])]
     if not rg: continue
     print(f"  {grp}: n={len(rg)} ttft p50={pct([r['ttft_ms'] for r in rg],50):.0f}ms "
           f"tpot p50={pct([r['tpot_ms'] for r in rg],50):.1f}ms ntok p50={pct([r['ntok'] for r in rg],50):.0f}")

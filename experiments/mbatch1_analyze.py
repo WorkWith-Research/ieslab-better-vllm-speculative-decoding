@@ -106,11 +106,12 @@ for C in (48, 96):
     if not ar_all or not ds_all:
         ap(f"## c{C}: NO VALID CELLS (ar={valid['ar']} dspark={valid['dspark']})")
         continue
-    # primary: B pooled + per class
+    # primary: B pooled + per class  (B-class names have no "B" prefix — hclass1 convention)
+    BCLS = {"SS", "SL", "LS", "LL"}
     b_pids = [p for p in ar_all if p.startswith("MIX")]
     def is_b(p):
         r = ar_all.get(p) or ds_all.get(p)
-        return r and r["cls"].startswith("B")
+        return bool(r) and r["cls"] in BCLS
     rows = []
     pb = paired_payoff({p: ar_all[p]["tpot_ms"] for p in b_pids if is_b(p)},
                        {p: ds_all[p]["tpot_ms"] for p in b_pids if is_b(p)})
