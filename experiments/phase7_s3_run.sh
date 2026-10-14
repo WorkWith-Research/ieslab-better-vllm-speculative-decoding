@@ -6,12 +6,19 @@
 # diverse+high-reuse stream at high load, where the class axis rescues SD for reusable
 # traffic that the load-only arm turns off?
 #
-#   Arms (6): DSpark-K7 (native fixed K=7), CTRL-ON (constant ON = overhead control),
-#             CTRL-LOADONLY (ON iff load_LOW), CTRL-CLASSONLY (ON iff class_HIGHREUSE),
-#             CTRL-LIVE (full 2-axis rule). [CTRL-OFF omitted: zero drafts, no info.]
-#   Loads (2): c48 (mid), c96 (high) — the cells where axes differentiate. c16 (low)
-#              is covered by the confirmation smoke (all arms ON there by design).
-#   Reps (2), counterbalanced arm order per load, shared workload seed 20261013.
+#   Arms (7): DSpark-K7 (native fixed K=7 = zero-overhead baseline), CTRL-ON (constant ON
+#             = patched overhead control, S4), CTRL-LOADONLY (ON iff load_LOW),
+#             CTRL-CLASSONLY (ON iff class_HIGHREUSE), CTRL-LIVE (full 2-axis rule),
+#             AR x2 (no spec config — same-workload baseline for S1; Phase 6 gate_e_repro
+#             AR cells are a different workload family, so the S1 comparison needs an
+#             in-run AR). CTRL-OFF omitted: zero drafts, no information.
+#   Loads (3): c16 (low), c48 (mid), c96 (high) x 3 reps (prereg §6: >=3 valid reps/cell,
+#             fresh server per trial). c16 is REQUIRED for "both axes necessary": at low
+#             load CLASSONLY turns SD OFF in diverse blocks (class signal low) while every
+#             other arm stays ON — the load-axis-necessary cell. At high load LOADONLY
+#             misses reuse blocks — the class-axis-necessary cell. AR runs only at c48/c96
+#             (S1 compares high-load diverse blocks). Shared workload seed 20261013 ->
+#             identical block sequence across arms. Counterbalanced arm order per load.
 #
 # Server: DSpark block7 K=7, prefix caching ON, max-num-seqs 64, GPU0. Per-cell causal
 # trace via VLLM_TB_TRACE. Incremental per-cell save -> partial data survives a crash.
@@ -34,20 +41,29 @@ gpu_free() {
 }
 gpu_free || { echo "FATAL: GPU$GPU not free"; exit 1; }
 
-start_server() { # $1=cell $2=mode   (mode in native|on|loadonly|classonly|live)
+start_server() { # $1=cell $2=mode   (mode in native|on|loadonly|classonly|live|ar)
   local cell="$1" mode="$2"
   local dir="$OUT/$cell"   # separate statement: all words of a `local` line expand before any assignment takes effect (set -u); also avoid the reserved parameter name
   unset VLLM_TB_MODE VLLM_OBS_TRACE 2>/dev/null || true
-  export VLLM_TB_MODE=$mode
-  export VLLM_TB_TRACE="$dir/trace.jsonl"; rm -f "$VLLM_TB_TRACE"
   export CUDA_VISIBLE_DEVICES=$GPU
   cd "$ENV"
-  setsid .venv/bin/python -m vllm.entrypoints.openai.api_server \
-    --model Qwen/Qwen3-4B --served-model-name qwen3-4b --port $PORT \
-    --tensor-parallel-size 1 --gpu-memory-utilization 0.90 \
-    --max-num-seqs 64 --max-num-batched-tokens 4096 --enable-prefix-caching \
-    --speculative-config '{"method": "dspark", "model": "deepseek-ai/dspark_qwen3_4b_block7", "num_speculative_tokens": 7}' \
-    > "$dir/server.log" 2>&1 < /dev/null &
+  if [ "$mode" = "ar" ]; then
+    # AR baseline: no speculative config at all (prereg S1 arm). No controller, no trace.
+    setsid .venv/bin/python -m vllm.entrypoints.openai.api_server \
+      --model Qwen/Qwen3-4B --served-model-name qwen3-4b --port $PORT \
+      --tensor-parallel-size 1 --gpu-memory-utilization 0.90 \
+      --max-num-seqs 64 --max-num-batched-tokens 4096 --enable-prefix-caching \
+      > "$dir/server.log" 2>&1 < /dev/null &
+  else
+    export VLLM_TB_MODE=$mode
+    export VLLM_TB_TRACE="$dir/trace.jsonl"; rm -f "$VLLM_TB_TRACE"
+    setsid .venv/bin/python -m vllm.entrypoints.openai.api_server \
+      --model Qwen/Qwen3-4B --served-model-name qwen3-4b --port $PORT \
+      --tensor-parallel-size 1 --gpu-memory-utilization 0.90 \
+      --max-num-seqs 64 --max-num-batched-tokens 4096 --enable-prefix-caching \
+      --speculative-config '{"method": "dspark", "model": "deepseek-ai/dspark_qwen3_4b_block7", "num_speculative_tokens": 7}' \
+      > "$dir/server.log" 2>&1 < /dev/null &
+  fi
   SRV_PID=$!
 }
 
@@ -96,14 +112,19 @@ run_cell() { # $1=arm_name $2=mode $3=conc $4=rep
 # Counterbalanced arm order per load (same workload seed -> identical block sequence).
 # Arm -> VLLM_TB_MODE: dspark->native (zero-overhead always-ON = true DSpark-K7 baseline,
 # no trace); on->on (constant ON = patched overhead control); loadonly/classonly/live ->
-# Phase7Controller ablations + full 2-axis rule.
-ARM_TO_MODE=(live dspark on classonly loadonly)
-MODE_OF() { case "$1" in live) echo live;; dspark) echo native;; on) echo on;; classonly) echo classonly;; loadonly) echo loadonly;; esac; }
+# Phase7Controller ablations + full 2-axis rule; ar -> no spec config (S1 baseline).
+# AR is included only at c48/c96 (S1 compares high-load diverse blocks; at c16 all arms
+# are near the low-load benefit and an extra AR cell buys little for ~3 min each).
+ARMS_LOW=(live dspark on classonly loadonly)
+ARMS_HIGH=(live dspark on classonly loadonly ar ar)
+MODE_OF() { case "$1" in live) echo live;; dspark) echo native;; on) echo on;; classonly) echo classonly;; loadonly) echo loadonly;; ar) echo ar;; esac; }
 run_load() { # $1=conc $2=label
-  local conc="$1" label="$2" arm mode
+  local conc="$1" label="$2" arm mode rep
+  local arms=(live dspark on classonly loadonly)
+  [ "$label" != "low" ] && arms+=(ar ar)
   echo "=== LOAD c$conc ($label): $(date -Is) ==="
-  for rep in 0 1; do
-    for arm in "${ARM_TO_MODE[@]}"; do
+  for rep in 0 1 2; do
+    for arm in "${arms[@]}"; do
       mode=$(MODE_OF "$arm")
       run_cell "${label}_${arm}_r${rep}" "$mode" "$conc" "$rep"
     done
@@ -111,6 +132,7 @@ run_load() { # $1=conc $2=label
 }
 
 echo "=== S3 RUN START $(date -Is) GPU$GPU dur=${DURATION}s seed=$SEED ==="
+run_load 16 low
 run_load 48 mid
 run_load 96 high
 echo "S3 DONE $(date -Is)"
