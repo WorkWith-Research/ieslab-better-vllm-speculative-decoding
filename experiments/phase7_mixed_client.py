@@ -180,12 +180,17 @@ for th in ths:
 
 time.sleep(max(0.0, stop_at[0] - time.monotonic()))
 in_b_block[0] = False
-# Bounded join: steady-window throughput is already captured from completed requests in
-# [WARMUP, DURATION]; a short bounded join captures the near-tail without letting long
-# in-flight requests (conc=96 backlog) blow out the cell time. All arms share this bound,
-# so it does not bias the relative comparison.
-for th in ths:
-    th.join(timeout=20)
+# Bounded tail grace (NOT a serial join): steady-window throughput is already captured
+# from completed requests in [WARMUP, DURATION]. A single bounded wait lets near-tail
+# completions land; with daemon workers the process then exits regardless of any thread
+# still stuck on a long in-flight request (the c48/c96 SD-off backlog case). A serial
+# th.join(timeout=20) over 96 workers could reach ~1920s worst case and blow the harness
+# timeout before client.jsonl was written. All arms share this bound -> no relative bias.
+TAIL_GRACE = 8.0
+for _ in range(40):
+    if not any(th.is_alive() for th in ths):
+        break
+    time.sleep(TAIL_GRACE / 40)
 
 with open(OUT, "w") as f:
     for r in recs:
