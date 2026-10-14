@@ -10,11 +10,11 @@ GitHub Project: https://github.com/orgs/WorkWith-Research/projects/1 (projectV2 
 | `PVTI_lADOEyEOMs4Bl95-zg-9nc4` | #2 | Phase 1: Observation — fixed-K SD under load | Done |
 | `PVTI_lADOEyEOMs4Bl95-zg-9neU` | #3 | Phase 2: Analysis — oracle gap for dynamic K | Done |
 | `PVTI_lADOEyEOMs4Bl95-zg-9nfY` | #4 | Phase 3: Prototype — per-request dynamic-K controller + live validation | Done |
-| `PVTI_lADOEyEOMs4Bl95-zg_JZ9c` | #10 | Phase 4: Realistic-workload validation — load, SPEED-Bench, heterogeneous ISL/OSL, DSpark | In progress |
+| `PVTI_lADOEyEOMs4Bl95-zg_JZ9c` | #10 | Phase 4: Realistic-workload validation — load, SPEED-Bench, heterogeneous ISL/OSL, DSpark | Done |
 | `PVTI_lADOEyEOMs4Bl95-zhAIokA` | #28 | H-CLASS-1: Request-class-dependent speculation economics under realistic heterogeneous serving | Done |
 | `PVTI_lADOEyEOMs4Bl95-zhAcqK4` | #29 | Phase 5: Content-based per-request acceptance predictor (Track A) | Done |
 
-**Current Phase-4 checkpoint:** Phase 4.1 saturation characterization, Phase 4.2 fixed-K × load, Phase 4.3 SPEED-Bench long-prefill validation, Phase 4.4 heterogeneous ISL×OSL (H-4.4a/b FALSIFY — see docs/phase4-p44-results.md), and Phase 4.5 DSpark-rule vs LDM are complete. Phase 4.6 live-load-aware adaptive speculation is running (rev-#4, unified SPS curve).
+**Current Phase-4 checkpoint:** CLOSED 2026-10-14 (see entry below). All six sub-phases complete with final preregistered verdicts: 4.1 no capacity saturation at C≤64; 4.2 H-load CONFIRMED (optimal K flips with load); 4.3 SPEED-Bench long-prefill second load axis; 4.4 heterogeneous ISL×OSL FALSIFY; 4.5 DSpark-rule vs LDM; 4.6 live-load-aware adaptive speculation FALSIFIED as specified (mechanism characterized: per-request greedy allocation + fixed spec-path overhead).
 
 Status option IDs: Backlog=`f75ad846` Ready=`61e4505c` In progress=`47fc9ee4`
 In review=`df73e18b` Done=`98236657`. Update via `scripts/set_item_status.sh <item-id> <option-id>`.
@@ -1208,3 +1208,23 @@ report: `docs/hclass1-results.md`; prereg deviations D1/D2/D3 in `docs/hclass1-p
   transient CUDA-driver wedge (orphaned EngineCore procs from failed boots) recovered by killing orphans, no GPU
   reset. Both lessons recorded in the vllm-serving-experiments skill.
 - **Deliverable:** `docs/hclass1d-results.md`. No new project item (held-out confirmation of an existing finding).
+
+### 2026-10-14 — Phase 4 CLOSED (Issue #10 → Done)
+All six sub-phases had final preregistered verdicts; this entry consolidates and closes the phase. No new runs.
+
+| sub-phase | result | one-line finding |
+|---|---|---|
+| 4.1 saturation | no saturation at C≤64 | GPU util ≠ serving saturation; throughput linear in concurrency, zero wait queue (docs/phase4-p41-results.md) |
+| 4.2 fixed-K × load | **H-load CONFIRMED** | optimal K flips with load; best fixed-K is workload- and load-dependent (docs/phase4-p42-results.md) |
+| 4.3 SPEED-Bench long-prefill | second load axis | long prefills induce a distinct regime + per-request structure (docs/phase4-p43-results.md) |
+| 4.4 heterogeneous ISL×OSL | H-4.4a/b FALSIFY | mixed ISL×OSL does not change the K-optimum story (docs/phase4-p44-results.md) |
+| 4.5 DSpark-rule vs LDM | complete | rule baselines characterized; motivates live-load-aware control (docs/phase4-p45-results.md) |
+| 4.6 live-load-aware adaptive spec | **H-4.6 FALSIFIED as specified** | load signal works; per-request greedy allocation fails at C=96 (negative externality) + fixed spec-path overhead no K-only controller can remove (docs/phase4-p6-results.md) |
+
+**Phase 4 synthesis:** (i) optimum speculation is a function of *serving state* (load regime) and *workload class*,
+not a constant — establishing the design space for the scheduler. (ii) Per-request greedy K allocation cannot
+reach the saturation optimum because each request's argmax ignores the slowdown its drafts impose on other
+requests (externality), and the spec path carries a fixed overhead only a scheduler-level enable/disable can
+remove. Both point to **batch/workload-regime-level control** — exactly the signal later validated in H-CLASS-1 /
+scheduler-signal-validation / H-CLASS-1D. Phase 4 therefore closes as the *measurement foundation* for the
+capstone (Phase 6: load×class live SD controller). Issue #10 → Done; project item updated.
