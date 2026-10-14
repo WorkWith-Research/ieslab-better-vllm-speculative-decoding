@@ -156,8 +156,8 @@ Both are in-process continuous state (not the prohibited `schedule()`-cadence si
 concurrency integer. kv-usage preferred over occupancy because it needs no `max_num_seqs` constant and tracks KV pressure
 directly; occupancy retained as a logged cross-check.
 
-### [CAL-2] Class signal (Q2) — threshold resolved offline; mixed-stream stability left to live smoke
-Per-condition DSpark acceptance from `analysis.json` (steady-window metric deltas):
+### [CAL-2] Class signal (Q2) — RESOLVED by live smoke 2026-10-14 → **NEGATIVE for the reactive class axis**
+Per-condition DSpark acceptance from `analysis.json` (steady-window metric deltas, **always-on** DSpark):
 
 | cond | c16 | c48 | c96 | mean |
 |---|---:|---:|---:|---:|
@@ -169,14 +169,45 @@ Per-condition DSpark acceptance from `analysis.json` (steady-window metric delta
 - **class_HIGHREUSE iff rolling draft-acceptance ratio > θ_acc.** Load-invariant by construction (acceptance is flat
   across c16→c96 within each condition), so it carries *class*, not load — the orthogonality that makes the 2-axis rule
   beat single-axis.
-- **OPEN (needs live smoke):** whether acceptance-with-decay stays bimodal in a *single mixed stream* alternating diverse
-  and high-reuse blocks (vs these separate-condition runs), and whether it flaps across brief OFF periods. The first
-  CTRL-LIVE smoke trial logs the rolling ratio + transition count; if it flaps, add prefix-cache-hit-rate as a secondary
-  class proxy (decided then, not now). This is the only [CAL] item not yet frozen.
+
+#### [CAL-2b] Live mixed-stream smoke result (2026-10-14, `experiments/phase7_smoke.sh`, DSpark-K7 live controller)
+The open sub-question — *does the class signal stay usable in a single mixed stream under reactive control?* — is now
+answered **no**, with a decisive cross-check:
+
+| scenario | kv p50 | SD-on % | acc_ratio global max | steps > θ_acc(0.45) | on/off transitions | causal (OFF⇒0 drafts) |
+|---|---:|---:|---:|---:|---:|---|
+| HI-MIX (c96, mixed) | 0.987 | **1%** | **0.295** | **0 / 379** | 13 / 3100 | ✓ pass |
+| LO-MIX (c10, mixed) | 0.231 | **100%** | 0.555 | 166 / 1196 | 0 / 1200 | ✓ pass |
+
+**Finding:** at high load the reactive class signal **never crosses θ_acc in any stretch** (global max 0.295), even though
+H-CLASS-1 measured steady-state B@c96 acceptance at **0.617** — same traffic, same load, always-on DSpark. The controller
+therefore stays OFF almost continuously (1% on) and the class axis is **non-functional exactly where it is supposed to
+matter**. The gap (0.295 live vs 0.617 steady) is a **measurement artifact of reactive control**, not a fundamental
+"draft model fails at c96" effect:
+
+- **Root cause — OFF periods cool the prefix cache.** When SD is off, high-reuse requests still run (plain AR), but the
+  controller's class signal can only sample *draft acceptances*, which require SD to be on. The 3-step re-entry probes are
+  too short and land on a **cold** prefix cache (acceptance ~0.1–0.3), so they never accumulate enough high-acceptance
+  samples in the 2 s window to commit ON — a self-reinforcing OFF lock at high load.
+- **Wiring verified correct:** LO-MIX acceptance (p50 0.357, max 0.555) matches the H-CLASS-1 c16 range (~0.33 diverse /
+  ~0.60 reuse), so the draft/accepted accumulation and rolling window are sound; the failure is specific to *high-load
+  reactive sampling*, not a harness bug.
+
+**Consequence for the capstone (honest, prereg §6):** **S3 ("both axes necessary") is falsified in this reactive form.**
+Because the class axis never fires at high load, CTRL-LIVE ≡ CTRL-LOADONLY on the mixed workload — the 2-axis rule does
+not beat either single axis end-to-end. The *load* axis works perfectly (LO-MIX 100% ON; HI-MIX correctly OFF except brief
+probes; no flapping: 13 transitions / 3100 steps). S5 causal correctness passes in both scenarios.
+
+**Implication (design lesson, not a retune):** a class signal derived from *SD's own acceptances* cannot be measured while
+SD is off — the very state it must predict. The class axis needs a proxy that is **available with SD off**: prefix-cache
+hit rate (load-invariant, high for reusable traffic) is the natural candidate. This reframes the capstone claim from
+"2-axis beats single-axis" to "class must be inferred from an SD-independent state."
 
 **Frozen before any controller trial:** θ_low_on=0.55, θ_low_off=0.75, θ_acc=0.45, load signal = kv_cache_usage_perc
 (secondary occupancy), class signal = rolling draft-acceptance ratio (load-invariant). Hysteresis/cooldown/probe structure
-reused from Track B R3 (T_off=1 s, probe 3 steps, band 0.15) — unchanged.
+reused from Track B R3 (T_off=1 s, probe 3 steps, band 0.15) — unchanged. **[CAL-2b] supersedes the earlier "left to live
+smoke" status: the mixed-stream question is resolved (negative), and the full 6-arm run set would only formally confirm S3's
+failure; it is NOT launched until the class-signal redesign decision is made.**
 
 ## 8. Deliverable & scope
 

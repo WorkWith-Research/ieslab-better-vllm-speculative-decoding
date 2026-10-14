@@ -1267,3 +1267,31 @@ traces) — stronger than a new smoke run. Frozen in `docs/phase7-capstone-prere
   first CTRL-LIVE smoke trial before the full run set (if it flaps, add prefix-cache-hit-rate secondary proxy then).
 Next: implement the 2-axis trigger in the Track B worktree (swap TPOT-trend rule -> load_LOW OR class_HIGHREUSE),
 unit-verify causal path, mixed-stream smoke, then the 6-arm comparison run set.
+
+### 2026-10-14 (cont.) — Phase 7 mixed-stream SMOKE DONE → NEGATIVE for the reactive class axis (S3 falsified in this form)
+Implemented the capstone 2-axis controller (`phase7_controller.py` in dspark-native-validation worktree, branch
+track-b-live-sd, commit 6ff5b0a; `sd_enabled <- load_LOW OR class_HIGHREUSE`, reuses Track B cooldown+probe re-entry).
+24 new unit/integration tests pass (44 total incl. 20 existing Track B); S5 causal assertion verified offline
+(OFF ⇒ 0 drafts scheduled, ON ⇒ K=7 drafts). Ran the live mixed-stream smoke (`experiments/phase7_smoke.sh`, one DSpark-K7
+`live` server per scenario, prefix caching ON):
+
+| scenario | kv p50 | SD-on % | acc_ratio global max | steps > θ_acc(0.45) | on/off transitions | causal |
+|---|---:|---:|---:|---:|---:|---|
+| HI-MIX (c96, mixed) | 0.987 | 1% | 0.295 | 0 / 379 | 13 / 3100 | ✓ |
+| LO-MIX (c10, mixed) | 0.231 | 100% | 0.555 | 166 / 1196 | 0 / 1200 | ✓ |
+
+**Finding:** at high load the reactive class signal NEVER crosses θ_acc in any stretch (global max 0.295), even though
+H-CLASS-1 measured steady-state B@c96 acceptance at **0.617** (same traffic, same load, always-on). The controller stays
+OFF ~99% of the time and the class axis is non-functional exactly where it must work. Root cause: OFF periods cool the
+prefix cache + 3-step probes too short/noisy → self-reinforcing OFF lock. **Wiring verified correct** (LO-MIX acceptance
+matches H-CLASS-1 c16 range). **Consequence:** S3 ("both axes necessary") is FALSIFIED in this reactive form — CTRL-LIVE ≡
+CTRL-LOADONLY on the mixed workload. The load axis works perfectly (no flapping, 13 transitions/3100 steps); S5 passes.
+
+**Design lesson (not a retune):** a class signal from SD's own acceptances can't be measured while SD is off — the state it
+must predict. Class needs an SD-independent proxy (prefix-cache hit rate). Reframes claim to "class must be inferred from
+SD-independent state." The full 6-arm run set is NOT launched (would only formally confirm S3's failure) pending a
+class-signal redesign decision.
+
+Next: decide class-signal redesign (prefix-cache-hit-rate proxy vs reframe capstone as load-axis-only + documented
+negative on reactive class axis). `docs/phase7-capstone-prereg.md` [CAL-2b] records the finding; new harness
+`experiments/phase7_smoke.sh` + `experiments/phase7_mixed_client.py` + shared `experiments/hclass1_prompts.py`.
