@@ -72,7 +72,8 @@ stop_server() {
 }
 
 run_cell() { # $1=arm_name $2=mode $3=conc $4=rep
-  local cell="$1" mode="$2" conc="$3" rep="$4" dir="$OUT/$cell"
+  local cell="$1" mode="$2" conc="$3" rep="$4"
+  local dir="$OUT/$cell"   # separate statement: bash expands all words of a `local` line before any assignment takes effect, so $cell must not appear on the first line (set -u)
   mkdir -p "$dir"
   for attempt in 1 2; do
     start_server "$cell" "$mode"
