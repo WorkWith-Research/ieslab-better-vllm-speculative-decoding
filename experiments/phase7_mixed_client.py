@@ -180,8 +180,12 @@ for th in ths:
 
 time.sleep(max(0.0, stop_at[0] - time.monotonic()))
 in_b_block[0] = False
+# Bounded join: steady-window throughput is already captured from completed requests in
+# [WARMUP, DURATION]; a short bounded join captures the near-tail without letting long
+# in-flight requests (conc=96 backlog) blow out the cell time. All arms share this bound,
+# so it does not bias the relative comparison.
 for th in ths:
-    th.join(timeout=120)
+    th.join(timeout=20)
 
 with open(OUT, "w") as f:
     for r in recs:
