@@ -1295,3 +1295,19 @@ class-signal redesign decision.
 Next: decide class-signal redesign (prefix-cache-hit-rate proxy vs reframe capstone as load-axis-only + documented
 negative on reactive class axis). `docs/phase7-capstone-prereg.md` [CAL-2b] records the finding; new harness
 `experiments/phase7_smoke.sh` + `experiments/phase7_mixed_client.py` + shared `experiments/hclass1_prompts.py`.
+
+### 2026-10-14 (cont.) — Phase 7 class axis REBUILT on prefix-cache hit-rate + CONFIRMED (S3 now testable)
+Per user decision, rebuilt the class axis on an SD-independent proxy (prefix-cache admission hit-rate) after [CAL-2b]
+showed the reactive acceptance signal fails at high load. Worktree commit 2ab37e7:
+- **Premise check** (c96 mixed, SD off): reusable B prefixes SURVIVE eviction from 96 diverse A requests; per-request
+  admission hit-rate bimodal (623 @~0 / 659 @~1); 2s windowed mean tracks the traffic mix. -> redesign is viable.
+- **Controller rebuilt**: class signal = rolling mean admission prefix-hit-rate, theta_hit=0.45; both axes now directly
+  observable with SD off -> dropped Track B cooldown+probe (simple OFF->ON cooldown flap guard; load axis bypasses it).
+  scheduler.py feeds prev-step admitted-request hit-rate (accumulated in waiting loop); env-gated admission trace added.
+- **Confirmation smoke** (DSpark-K7 live, same scenarios): HI-MIX c96 SD-on **1% -> 24%** (class axis now fires at high
+  load for reusable traffic), LO-MIX c10 100% ON (load axis). Causal OFF=>0 drafts PASSES both. S5 ok.
+
+Result: the exact [CAL-2b] failure is fixed — class axis works at high load. S3 (both axes necessary) now testable:
+CTRL-LIVE turns SD on for reusable traffic at high load where CTRL-LOADONLY stays off. Next: run the full 6-arm S3
+comparison set to measure end-to-end realized gain + confirm CTRL-LIVE beats both single-axis ablations in aggregate.
+docs/phase7-capstone-prereg.md [CAL-2c]; new experiments/phase7_premise_check.sh; smoke harness field fixed (hit_rate).

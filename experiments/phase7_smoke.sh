@@ -122,15 +122,14 @@ for name in ("hi_mix", "lo_mix"):
             trans += 1
         prev = cur
     print(f"  on/off transitions (flapping proxy) = {trans} over {len(tr)} steps")
-    # class signal bimodality: acc_ratio distribution, split by whether the step's
-    # dominant traffic was reuse vs diverse is not directly in trace; instead show the
-    # acc_ratio spread and how often it crosses theta_acc=0.45.
-    accs = [r["acc_ratio"] for r in tr if r["acc_ratio"] is not None]
-    if accs:
-        lo = sum(1 for a in accs if a <= 0.45)
-        hi = sum(1 for a in accs if a > 0.45)
-        print(f"  acc_ratio non-null={len(accs)} p50={st.median(accs):.3f} "
-              f"min={min(accs):.3f} max={max(accs):.3f} | <=0.45:{lo} >0.45:{hi}")
+    # class signal bimodality: hit_rate distribution (SD-independent prefix-hit proxy)
+    hrs = [r["hit_rate"] for r in tr if r["hit_rate"] is not None]
+    if hrs:
+        import statistics as st2
+        lo = sum(1 for a in hrs if a <= 0.45)
+        hi = sum(1 for a in hrs if a > 0.45)
+        print(f"  hit_rate non-null={len(hrs)} p50={st2.median(hrs):.3f} "
+              f"min={min(hrs):.3f} max={max(hrs):.3f} | <=0.45:{lo} >0.45:{hi}")
     # causal assertion: OFF steps must have 0 drafts scheduled; ON/probe decode steps K drafts
     bad_off = sum(1 for r in tr if not r["sd_enabled"] and r["drafts_scheduled_this_step"] > 0)
     print(f"  CAUSAL check: OFF steps with >0 drafts = {bad_off} (must be 0)")

@@ -203,11 +203,40 @@ SD is off — the very state it must predict. The class axis needs a proxy that 
 hit rate (load-invariant, high for reusable traffic) is the natural candidate. This reframes the capstone claim from
 "2-axis beats single-axis" to "class must be inferred from an SD-independent state."
 
-**Frozen before any controller trial:** θ_low_on=0.55, θ_low_off=0.75, θ_acc=0.45, load signal = kv_cache_usage_perc
-(secondary occupancy), class signal = rolling draft-acceptance ratio (load-invariant). Hysteresis/cooldown/probe structure
-reused from Track B R3 (T_off=1 s, probe 3 steps, band 0.15) — unchanged. **[CAL-2b] supersedes the earlier "left to live
-smoke" status: the mixed-stream question is resolved (negative), and the full 6-arm run set would only formally confirm S3's
-failure; it is NOT launched until the class-signal redesign decision is made.**
+#### [CAL-2c] Class axis REBUILT on prefix-cache hit-rate + CONFIRMED (2026-10-14, worktree `2ab37e7`)
+The class axis was rebuilt exactly as [CAL-2b]'s implication prescribed: **rolling mean admission prefix-hit-rate**
+(measured from KV blocks at request admission — orthogonal to speculative decoding, so available while SD is off),
+θ_hit = 0.45. This resolves the chicken-and-egg: both axes are now directly observable in the state we decide from, so
+the Track B cooldown+probe re-entry mechanism was dropped (a simple OFF→ON cooldown flap guard suffices; the load axis
+bypasses it to rescue immediately on a genuine load drop).
+
+**Premise check** (`experiments/phase7_premise_check.sh`, c96 mixed, SD off — isolates the cache question): do reusable B
+prefixes survive eviction pressure from 96 diverse A requests? **Yes.** Per-request admission hit-rate is cleanly bimodal
+(623 at ~0.0 diverse / 659 at ~1.0 reusable); the 2 s windowed mean tracks the traffic mix over time (rises to ~0.7–0.9 in
+reusable-heavy periods, dips to ~0.0–0.3 in diverse-heavy). Reusable prefixes persist as long as they keep being re-requested
+—which is what "high-reuse" means.
+
+**Confirmation smoke** (`experiments/phase7_smoke.sh`, DSpark-K7 live controller, same scenarios as [CAL-2b]):
+
+| scenario | kv p50 | SD-on % (was) | hit_rate max | class_hi fires | on/off transitions | causal (OFF⇒0 drafts) |
+|---|---:|---:|---:|---|---:|---|
+| HI-MIX (c96, mixed) | 0.987 | **24%** (was 1%) | 0.974 | ✓ up to 100%/window | 29 / 1800 | ✓ pass |
+| LO-MIX (c10, mixed) | 0.226 | **100%** (was 100%) | 0.984 | n/a (load axis) | 0 / 1200 | ✓ pass |
+
+**Result: the class axis now works at high load — the exact failure [CAL-2b] had.** At c96, SD-on rose from 1% to 24%,
+with the ON steps concentrated in windows where reusable prefixes are actually available (hit-rate peaks 0.6–0.97); the
+class axis drives SD on for reusable traffic at high load where the load-only arm stays OFF. The signal is honest: under
+c96 contention even B blocks sometimes get evicted (low hit-rate → correctly OFF), so it tracks the *real* reuse
+opportunity, not just a traffic-class label. S5 causal correctness passes in both scenarios.
+
+**Consequence:** S3 ("both axes necessary") is now **testable** — CTRL-LIVE turns SD on at high load for reusable traffic
+(24%) where CTRL-LOADONLY stays off. The full 6-arm comparison run set proceeds to measure the end-to-end realized gain
+and confirm CTRL-LIVE beats both single-axis ablations in aggregate.
+
+**Frozen before any controller trial:** θ_low_on=0.55, θ_low_off=0.75, **θ_hit=0.45**, load signal = kv_cache_usage_perc
+(secondary occupancy), class signal = rolling mean admission prefix-hit-rate (SD-independent). OFF→ON cooldown 1 s (load
+axis bypasses it); ON→OFF immediate. **[CAL-2c] supersedes [CAL-2b]'s "not launched" status: the class axis is rebuilt and
+confirmed functional; the full 6-arm run set now proceeds.**
 
 ## 8. Deliverable & scope
 
