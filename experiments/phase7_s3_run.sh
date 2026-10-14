@@ -112,16 +112,14 @@ run_cell() { # $1=arm_name $2=mode $3=conc $4=rep
 # Counterbalanced arm order per load (same workload seed -> identical block sequence).
 # Arm -> VLLM_TB_MODE: dspark->native (zero-overhead always-ON = true DSpark-K7 baseline,
 # no trace); on->on (constant ON = patched overhead control); loadonly/classonly/live ->
-# Phase7Controller ablations + full 2-axis rule; ar -> no spec config (S1 baseline).
-# AR is included only at c48/c96 (S1 compares high-load diverse blocks; at c16 all arms
-# are near the low-load benefit and an extra AR cell buys little for ~3 min each).
-ARMS_LOW=(live dspark on classonly loadonly)
-ARMS_HIGH=(live dspark on classonly loadonly ar ar)
-MODE_OF() { case "$1" in live) echo live;; dspark) echo native;; on) echo on;; classonly) echo classonly;; loadonly) echo loadonly;; ar) echo ar;; esac; }
+# Phase7Controller ablations + full 2-axis rule; ar1/ar2 -> no spec config (S1 baseline,
+# two distinct cells per rep for run-to-run uncertainty). AR only at c48/c96 (S1 compares
+# high-load diverse blocks; at c16 all arms are near the low-load benefit).
+MODE_OF() { case "$1" in live) echo live;; dspark) echo native;; on) echo on;; classonly) echo classonly;; loadonly) echo loadonly;; ar1|ar2) echo ar;; esac; }
 run_load() { # $1=conc $2=label
   local conc="$1" label="$2" arm mode rep
   local arms=(live dspark on classonly loadonly)
-  [ "$label" != "low" ] && arms+=(ar ar)
+  [ "$label" != "low" ] && arms+=(ar1 ar2)
   echo "=== LOAD c$conc ($label): $(date -Is) ==="
   for rep in 0 1 2; do
     for arm in "${arms[@]}"; do
