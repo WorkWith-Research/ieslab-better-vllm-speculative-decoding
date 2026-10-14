@@ -72,23 +72,23 @@ stop_server() {
 }
 
 run_cell() { # $1=arm_name $2=mode $3=conc $4=rep
-  local name="$1" mode="$2" conc="$3" rep="$4" dir="$OUT/$name"
+  local cell="$1" mode="$2" conc="$3" rep="$4" dir="$OUT/$cell"
   mkdir -p "$dir"
   for attempt in 1 2; do
-    start_server "$name" "$mode"
-    if wait_health "$name"; then break; fi
-    echo "  $name server unhealthy (attempt $attempt)"; tail -5 "$dir/server.log"
+    start_server "$cell" "$mode"
+    if wait_health "$cell"; then break; fi
+    echo "  $cell server unhealthy (attempt $attempt)"; tail -5 "$dir/server.log"
     stop_server
-    [ $attempt -eq 2 ] && { echo "SKIP: $name not healthy after retry"; return 1; }
+    [ $attempt -eq 2 ] && { echo "SKIP: $cell not healthy after retry"; return 1; }
     sleep 10
   done
   cd "$ENV" && timeout $((DURATION + 90)) .venv/bin/python "$REPO/experiments/phase7_mixed_client.py" \
     $PORT $DURATION $conc $BLOCKS "$dir/client.jsonl" $SEED MIX > "$dir/client.log" 2>&1
   local rc=$?
-  echo "  $name client rc=$rc"
+  echo "  $cell client rc=$rc"
   sleep 3; stop_server; sleep 8
   # incremental per-cell save
-  echo "{\"arm\":\"$name\",\"conc\":$conc,\"rep\":$rep,\"client_rc\":$rc,\"ts\":\"$(date -Is)\"}" >> "$OUT/cells.jsonl"
+  echo "{\"arm\":\"$cell\",\"conc\":$conc,\"rep\":$rep,\"client_rc\":$rc,\"ts\":\"$(date -Is)\"}" >> "$OUT/cells.jsonl"
 }
 
 # Counterbalanced arm order per load (same workload seed -> identical block sequence).
