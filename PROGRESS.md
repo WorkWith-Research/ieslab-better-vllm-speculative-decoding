@@ -13,6 +13,7 @@ GitHub Project: https://github.com/orgs/WorkWith-Research/projects/1 (projectV2 
 | `PVTI_lADOEyEOMs4Bl95-zg_JZ9c` | #10 | Phase 4: Realistic-workload validation — load, SPEED-Bench, heterogeneous ISL/OSL, DSpark | Done |
 | `PVTI_lADOEyEOMs4Bl95-zhAIokA` | #28 | H-CLASS-1: Request-class-dependent speculation economics under realistic heterogeneous serving | Done |
 | `PVTI_lADOEyEOMs4Bl95-zhAcqK4` | #29 | Phase 5: Content-based per-request acceptance predictor (Track A) | Done |
+| `PVTI_lADOEyEOMs4Bl95-zhApxh4` | #30 | Phase 7 (capstone): request-aware SD scheduler from live serving state (load × traffic-class) | In progress |
 
 **Current Phase-4 checkpoint:** CLOSED 2026-10-14 (see entry below). All six sub-phases complete with final preregistered verdicts: 4.1 no capacity saturation at C≤64; 4.2 H-load CONFIRMED (optimal K flips with load); 4.3 SPEED-Bench long-prefill second load axis; 4.4 heterogeneous ISL×OSL FALSIFY; 4.5 DSpark-rule vs LDM; 4.6 live-load-aware adaptive speculation FALSIFIED as specified (mechanism characterized: per-request greedy allocation + fixed spec-path overhead).
 
