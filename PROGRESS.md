@@ -1255,3 +1255,15 @@ capstone (Phase 6: load×class live SD controller). Issue #10 → Done; project 
   cleanest without tracking schedule() cadence; (2) whether acceptance-with-decay across OFF periods is stable enough or
   needs a prefix-cache-hit-rate secondary proxy. Recorded as findings if non-discriminating, not silent retunes.
 - **Status:** SPEC only — no runs yet. Next: smoke step to fill [CAL], then the comparison run set.
+
+### 2026-10-14 (cont.) — Phase 7 [CAL] block filled offline (both signal questions resolved)
+Both capstone design questions resolved from EXISTING H-CLASS-1 data (analysis.json + per-cell metrics.jsonl + obs
+traces) — stronger than a new smoke run. Frozen in `docs/phase7-capstone-prereg.md` §7:
+- **[CAL-1] Load signal = `kv_cache_usage_perc`** (primary; occupancy secondary). Steady medians c16/c48/c96 =
+  0.303/0.929/0.983; waiting FAILS (c48=0). Hysteresis θ_low_on=0.55 / θ_low_off=0.75 (mid-gap, ~2× margin each side).
+- **[CAL-2] Class signal = rolling draft-acceptance ratio, θ_acc=0.45** (A/C max 0.335 ≪ 0.45 ≪ B min 0.599; load-invariant
+  by construction -> carries class not load).
+- **Remaining open (needs live controller):** mixed-stream bimodality + flapping across OFF periods — confirmed by the
+  first CTRL-LIVE smoke trial before the full run set (if it flaps, add prefix-cache-hit-rate secondary proxy then).
+Next: implement the 2-axis trigger in the Track B worktree (swap TPOT-trend rule -> load_LOW OR class_HIGHREUSE),
+unit-verify causal path, mixed-stream smoke, then the 6-arm comparison run set.

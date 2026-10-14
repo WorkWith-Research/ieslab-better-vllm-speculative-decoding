@@ -88,15 +88,20 @@ controller is validated on **mixed traffic** that varies both axes within one st
   — the Ac48/Ac96 cells), while staying ON at low load regardless of class. CTRL-LOADONLY fails the first;
   CTRL-CLASSONLY fails the second.
 
-## 5. Open signal-design questions — resolve by smoke test BEFORE freezing [CAL]
+## 5. Open signal-design questions — RESOLVED offline 2026-10-14 (see §7 [CAL])
 
-These are genuine design choices, not constants to guess. A single mixed-workload smoke run (one low + one high load,
-both arms' signals logged) resolves them; the winning choice is frozen in an append-only [CAL] block:
+Both design questions turned out to be resolvable from the **existing** H-CLASS-1 A/B/C data (analysis.json + per-cell
+metrics.jsonl + obs traces) — more rigorous than a single new smoke run. Resolved and frozen in §7:
 
-1. **Load signal:** KV-usage-fraction vs running-occupancy vs a combination — pick whichever separates the c16/c48/c96
-   operating points most cleanly on the smoke traces (and confirm it does NOT track `schedule()` cadence, per Defect 2).
-2. **Class signal robustness across OFF periods:** is acceptance-with-decay stable enough to avoid flapping, or is a
-   prefix-cache-hit-rate secondary proxy needed? Measure transition count in the smoke run; freeze accordingly.
+1. **Load signal → `kv_cache_usage_perc`** (primary; occupancy secondary). Separates [c16 | c48, c96] cleanly
+   (0.30 vs 0.93/0.98); waiting fails (c48=0). Hysteresis band θ_low_on=0.55 / θ_low_off=0.75.
+2. **Class signal → rolling draft-acceptance ratio, θ_acc=0.45** (mid-gap: A/C max 0.335 ≪ 0.45 ≪ B min 0.599).
+   Load-invariant by construction.
+
+**Remaining open item (needs the live controller, not a separate smoke):** whether acceptance-with-decay stays bimodal in
+a *single mixed stream* alternating diverse + high-reuse blocks, and whether it flaps across brief OFF periods. Confirmed
+by the first CTRL-LIVE smoke trial (logs rolling ratio + transition count) before the full run set; if it flaps, add
+prefix-cache-hit-rate as a secondary class proxy then.
 
 (If either signal turns out to be non-discriminating on this workload — as Track B's acceptance-ratio trigger was for
 its *reactive* use — that is a recorded finding bounding the claim, not a silent retune.)
@@ -124,9 +129,54 @@ per-trial values and the uncertainty needed.
 **Prohibited claims (even on success):** outperforming native adaptive verification (never run on this hardware);
 generalization beyond Qwen3-4B / dspark_qwen3_4b_block7 / SM86; novelty of load-aware K per se (suspended claim list).
 
-## 7. Calibration block [CAL] — to be appended from the §5 smoke step before any controller trial
+## 7. Calibration block [CAL] — filled 2026-10-14 from EXISTING data (stronger than a fresh smoke)
 
-(empty by design)
+**Provenance note:** both signal choices are resolvable offline from the already-collected H-CLASS-1 A/B/C cells
+(`results/hclass1/...`, analysis.json + per-cell metrics.jsonl + obs traces), which is more rigorous than a single new
+smoke run. The one sub-question that genuinely requires the live controller (class-signal stability across OFF periods in
+a *mixed* stream) is left open and will be confirmed by the first CTRL-LIVE smoke trial before the full run set.
+
+### [CAL-1] Load signal (Q1) — RESOLVED offline
+Steady-window medians per condition-A cell (metrics `kv_cache_usage_perc`, obs `running`/`waiting`; max_num_seqs=64):
+
+| cell | kv_cache_usage | occupancy = running/64 | waiting |
+|---|---:|---:|---:|
+| c16 | 0.303 | 0.250 | 0 |
+| c48 | 0.929 | 0.625 | 0 |
+| c96 | 0.983 | 0.672 | 35 |
+
+The decision boundary that matters is **[c16 \| c48, c96]** (both mid and high are "not low"). `kv_cache_usage_perc`
+(0.30 vs 0.93/0.98) and occupancy (0.25 vs 0.62/0.67) both separate it cleanly; **waiting FAILS** (c48 also = 0). Choose
+**primary = `kv_cache_usage_perc`**, secondary = occupancy, with a hysteresis band:
+
+- **load_LOW iff kv_cache_usage < θ_low_on = 0.55** and **load_NOT_LOW (OFF trigger) iff kv_cache_usage > θ_low_off = 0.75**
+  (hysteresis band 0.55–0.75; sits mid-gap between c16's 0.30 and c48/c96's 0.93/0.98, ~2× margin each side).
+
+Both are in-process continuous state (not the prohibited `schedule()`-cadence signal, Track B Defect 2), and neither is a
+concurrency integer. kv-usage preferred over occupancy because it needs no `max_num_seqs` constant and tracks KV pressure
+directly; occupancy retained as a logged cross-check.
+
+### [CAL-2] Class signal (Q2) — threshold resolved offline; mixed-stream stability left to live smoke
+Per-condition DSpark acceptance from `analysis.json` (steady-window metric deltas):
+
+| cond | c16 | c48 | c96 | mean |
+|---|---:|---:|---:|---:|
+| A diverse | 0.335 | 0.333 | 0.329 | 0.332 |
+| B high-reuse | 0.601 | 0.599 | 0.617 | 0.606 |
+| C shared-doc | 0.302 | 0.303 | 0.318 | 0.308 |
+
+- **θ_acc = 0.45** (mid-gap; A/C max 0.335 ≪ 0.45 ≪ B min 0.599, ~2× margin each side).
+- **class_HIGHREUSE iff rolling draft-acceptance ratio > θ_acc.** Load-invariant by construction (acceptance is flat
+  across c16→c96 within each condition), so it carries *class*, not load — the orthogonality that makes the 2-axis rule
+  beat single-axis.
+- **OPEN (needs live smoke):** whether acceptance-with-decay stays bimodal in a *single mixed stream* alternating diverse
+  and high-reuse blocks (vs these separate-condition runs), and whether it flaps across brief OFF periods. The first
+  CTRL-LIVE smoke trial logs the rolling ratio + transition count; if it flaps, add prefix-cache-hit-rate as a secondary
+  class proxy (decided then, not now). This is the only [CAL] item not yet frozen.
+
+**Frozen before any controller trial:** θ_low_on=0.55, θ_low_off=0.75, θ_acc=0.45, load signal = kv_cache_usage_perc
+(secondary occupancy), class signal = rolling draft-acceptance ratio (load-invariant). Hysteresis/cooldown/probe structure
+reused from Track B R3 (T_off=1 s, probe 3 steps, band 0.15) — unchanged.
 
 ## 8. Deliverable & scope
 
