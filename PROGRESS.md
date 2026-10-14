@@ -1311,3 +1311,26 @@ Result: the exact [CAL-2b] failure is fixed — class axis works at high load. S
 CTRL-LIVE turns SD on for reusable traffic at high load where CTRL-LOADONLY stays off. Next: run the full 6-arm S3
 comparison set to measure end-to-end realized gain + confirm CTRL-LIVE beats both single-axis ablations in aggregate.
 docs/phase7-capstone-prereg.md [CAL-2c]; new experiments/phase7_premise_check.sh; smoke harness field fixed (hit_rate).
+
+### 2026-10-15 — Phase 7 S3 run set complete → FALSIFIED (S1, S3 fail; S2/S4/S5 pass)
+Ran the full preregistered comparison set once (57 cells: 5 controller arms × {c16,c48,c96} × 3 reps + AR baseline ×
+{c48,c96} × 3, fresh server/trial, shared seed). Metric = server-side steady generation throughput (tok/s) — the correct
+one, since client completion counts are underpowered at c48/c96 (e2e p50 ~40-52s for these long generations).
+
+**Verdict: FALSIFIED.**
+- S1 (crossover recovery @c96): CTRL-LIVE 1111 vs AR 1574 = −29.4% (~13×δ) — fails; only recovers ~¼ of the gap, and the
+  gap is shared by native DSpark-K7 itself (−35.5% vs AR).
+- S3 (both axes necessary): CTRL-LIVE 1172 < CTRL-LOADONLY 1404 (−16.5%, ~5-7×δ) — the class axis *costs* throughput at
+  high load; only beats CLASSONLY (+5.4%). "Both axes necessary" does NOT hold end-to-end.
+- S2 (low-load preservation): PASS (live ≈ native DSpark within δ). S4 (overhead): PASS (CTRL-ON ≈ DSpark-K7). 
+  S5 (causal): PASS (36 traces, 0 OFF-steps-with-drafts).
+
+**Mechanism:** the static payoff surface was measured on *homogeneous* per-class cells; its marginal Bc96 cell (+0.022)
+flips negative under live *mixed-batch* serving (batch-mix dilution of acceptance + draft overhead at KV~98%). The class
+axis is a no-op-to-negative contribution end-to-end at fixed K=7 on this hardware.
+
+**Positive byproducts:** a causal, overhead-free live SD controller validated end-to-end; and a hard constraint — population
+payoff surfaces measured on homogeneous cells do NOT bound per-step decisions under mixed batches.
+
+docs/phase7-capstone-results.md (full analysis + provenance); raw data results/phase7_s3/ (57 cell dirs, gitignored);
+prereg §9 outcome pointer added. Phase 7 closes with a negative capstone result — no retune loop (prereg §6).

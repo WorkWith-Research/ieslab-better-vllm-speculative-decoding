@@ -253,3 +253,10 @@ axis is rebuilt and confirmed functional; the full comparison run set now procee
 **Honest scope:** validates the *on/off* 2-axis rule at fixed K=7 on one model/draft pair/hardware. It does not make
 K itself adaptive (blocked), does not claim generalization, and its class signal is population-level by design (Track A
 showed per-request is the wrong granularity).
+
+## 9. Outcome pointer (filled after the single preregistered run set)
+
+The S3 comparison run set was executed once as registered (57 cells, 2026-10-15). **Result: FALSIFIED — S1 and S3 fail
+beyond uncertainty; S2/S4/S5 pass.** Full analysis, mechanism, and consequence: `docs/phase7-capstone-results.md`. The
+static payoff surface's marginal Bc96 cell (+0.022) flips negative under live mixed-batch serving; the class axis is a
+no-op-to-negative contribution end-to-end at fixed K=7 on this hardware. No retune loop was applied (prereg §6).
