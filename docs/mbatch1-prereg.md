@@ -110,3 +110,12 @@ client with frozen H-CLASS-1 lambdas). Client: `experiments/mbatch1_client.py` (
 BANK_A/CANON verbatim — same prompts as S3 and H-CLASS-1). Analysis: `experiments/mbatch1_analyze.py`.
 Raw data: `results/mbatch1/` (gitignored). Homogeneous anchors: `results/hclass1/` (H-CLASS-1, prereg
 `docs/hclass1-prereg.md`). S3 workload reference: `experiments/phase7_mixed_client.py` + `results/phase7_s3/`.
+
+## 9. Outcome pointer (filled after the single preregistered run set)
+
+All 12 cells ran as registered (3 reps × {ar, dspark} × {c48, c96}, 2026-10-15; post-run revalidation with the
+fixed classifier — §7 bug — restored all 12 to DONE). **Result: H1 CONFIRMED at both loads** (B payoff
+−0.0835 [−0.1238, −0.0442] c48; −0.2896 [−0.3876, −0.2085] c96 — CIs entirely ≤ 0). The mixed-batch sign flip
+is real and large; the class axis has no headroom at fixed K=7 under live serving. Per §5 the capstone stays
+closed as falsified and successor scope = batch-aware speculation (per-request K / selective drafts). Full
+analysis: `docs/mbatch1-results.md` + `results/mbatch1/report.md`. No re-run with changed parameters.

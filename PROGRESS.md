@@ -1334,3 +1334,22 @@ payoff surfaces measured on homogeneous cells do NOT bound per-step decisions un
 
 docs/phase7-capstone-results.md (full analysis + provenance); raw data results/phase7_s3/ (57 cell dirs, gitignored);
 prereg §9 outcome pointer added. Phase 7 closes with a negative capstone result — no retune loop (prereg §6).
+
+### 2026-10-15 — M-BATCH-1 (mechanism confirmation) complete → H1 CONFIRMED at both loads
+Preregistered before data (docs/mbatch1-prereg.md): AR vs native DSpark-K7 on an open-loop Poisson MIXED
+stream (50% diverse A / 50% canonical high-reuse B, frozen H-CLASS-1 pressures), c48/c96 × 3 reps, pid-matched
+per-class TPOT payoff under mixing. All 12 cells valid (bring-up classifier bug — cls.startswith("B") on
+prefix-less class names — fixed and documented in prereg §7; post-run revalidation restored all DONE).
+
+**Result: H1 CONFIRMED.** B-class payoff under live mixed batches: c48 −0.0835 [−0.124, −0.044] (n=226) vs
+homogeneous anchor +0.1209; c96 −0.2896 [−0.388, −0.209] (n=219) vs +0.0216. Sign flip is real and decisive —
+the Phase 7 mechanism argument (batch-mix dilution + draft overhead at saturation) is now MEASURED, not
+inferred. Queue-depth probe: B payoff degrades monotonically with in-flight-at-arrival (c96: −0.11 shallow →
+−0.35 deep). Prefix hit rates comparable on both arms at c96 → loss is not a cache-miss artifact.
+
+**Consequence (prereg §5 decision rule):** the class axis has no headroom at fixed K=7 under live serving —
+even a perfect admission-time estimator of the homogeneous payoff could not have saved it, because the LIVE
+payoff itself is negative. Capstone stays closed as falsified; successor scope = batch-aware speculation
+(per-request K / selective drafts) — changing WHAT SD applies to, which no on/off policy can do.
+
+docs/mbatch1-results.md (full analysis); results/mbatch1/report.md + raw 12 cell dirs (gitignored).
