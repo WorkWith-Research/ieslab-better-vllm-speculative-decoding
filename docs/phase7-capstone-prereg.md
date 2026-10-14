@@ -211,10 +211,15 @@ the Track B cooldown+probe re-entry mechanism was dropped (a simple OFF→ON coo
 bypasses it to rescue immediately on a genuine load drop).
 
 **Premise check** (`experiments/phase7_premise_check.sh`, c96 mixed, SD off — isolates the cache question): do reusable B
-prefixes survive eviction pressure from 96 diverse A requests? **Yes.** Per-request admission hit-rate is cleanly bimodal
-(623 at ~0.0 diverse / 659 at ~1.0 reusable); the 2 s windowed mean tracks the traffic mix over time (rises to ~0.7–0.9 in
-reusable-heavy periods, dips to ~0.0–0.3 in diverse-heavy). Reusable prefixes persist as long as they keep being re-requested
-—which is what "high-reuse" means.
+prefixes survive eviction pressure from 96 diverse A requests? **Yes.** Per-request admission hit-rate (clamped to [0,1])
+is **broadly bimodal with a mid-band**: 771 high (>0.8) / 385 mid / 691 low (<0.2), p50 0.589 across the whole stream. The
+**10 s windowed timeline is the clean signal**: the high-hit fraction rises to ~0.5–0.54 in reusable-heavy periods (p50
+~0.7–0.9) and falls to ~0.16–0.18 in diverse-heavy periods (p50 ~0.0–0.28), then recovers to ~0.93–1.0 as the stream
+re-enters reuse — i.e. reusable prefixes persist *as long as they keep being re-requested*, which is what "high-reuse"
+means. (The raw per-request diagnostic was captured before the hit-rate clamp landed in `2ab37e7` and showed unclamped
+ratios up to ~22 from block-aligned `local_cached` exceeding the prompt; recomputing the clamped ratio from the stored
+`local_cached`/`prompt_tokens` fields gives the [0,1] values above. The live controller signal is clamped — verified in
+the S3 traces, max hit-rate 0.915.)
 
 **Confirmation smoke** (`experiments/phase7_smoke.sh`, DSpark-K7 live controller, same scenarios as [CAL-2b]):
 
@@ -230,13 +235,13 @@ c96 contention even B blocks sometimes get evicted (low hit-rate → correctly O
 opportunity, not just a traffic-class label. S5 causal correctness passes in both scenarios.
 
 **Consequence:** S3 ("both axes necessary") is now **testable** — CTRL-LIVE turns SD on at high load for reusable traffic
-(24%) where CTRL-LOADONLY stays off. The full 6-arm comparison run set proceeds to measure the end-to-end realized gain
-and confirm CTRL-LIVE beats both single-axis ablations in aggregate.
+(24%) where CTRL-LOADONLY stays off. The full comparison run set (5 controller arms + AR baseline × {c16, c48, c96} × 3
+reps) proceeds to measure the end-to-end realized gain and confirm CTRL-LIVE beats both single-axis ablations in aggregate.
 
 **Frozen before any controller trial:** θ_low_on=0.55, θ_low_off=0.75, **θ_hit=0.45**, load signal = kv_cache_usage_perc
-(secondary occupancy), class signal = rolling mean admission prefix-hit-rate (SD-independent). OFF→ON cooldown 1 s (load
-axis bypasses it); ON→OFF immediate. **[CAL-2c] supersedes [CAL-2b]'s "not launched" status: the class axis is rebuilt and
-confirmed functional; the full 6-arm run set now proceeds.**
+(secondary occupancy), class signal = rolling mean admission prefix-hit-rate (SD-independent, clamped to [0,1]). OFF→ON
+cooldown 1 s (load axis bypasses it); ON→OFF immediate. **[CAL-2c] supersedes [CAL-2b]'s "not launched" status: the class
+axis is rebuilt and confirmed functional; the full comparison run set now proceeds.**
 
 ## 8. Deliverable & scope
 
