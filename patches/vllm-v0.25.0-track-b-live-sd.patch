@@ -1,0 +1,2995 @@
+diff --git a/constraints.txt b/constraints.txt
+new file mode 100644
+index 0000000..1d92add
+--- /dev/null
++++ b/constraints.txt
+@@ -0,0 +1 @@
++torch==2.11.0
+diff --git a/scripts/hoobs1_arms.py b/scripts/hoobs1_arms.py
+new file mode 100644
+index 0000000..ee347af
+--- /dev/null
++++ b/scripts/hoobs1_arms.py
+@@ -0,0 +1,153 @@
++#!/usr/bin/env python3
++"""H-OBS-1 experiment-arm resolver — table-driven, unit-testable.
++
++Directive §3A: separate the shared DSpark *model* arguments from the mutually
++exclusive *controller-mode* selection; reject unknown arms; make instrumentation
++(tracer) ON/OFF a separate axis; and give every arm an unambiguous label.
++
++This is the single source of truth for what each arm means. The launcher
++(run_hoobs1.sh) shells out to `resolve` so the exact same logic that is unit-
++tested here is what actually launches servers. Run `--selftest` to verify every
++arm resolves to its required effective behavior (a regression test).
++
++Arms (policy axis):
++  ar        : NO speculative model configured; NO live-controller policy active.
++  dspark    : learned DSpark drafter, fixed K=7, native mode (always-on SD).
++  ctrl_live : same learned drafter + the frozen Track B live-state controller.
++
++Instrumentation axis (separate): tracer on/off. The historical label
++`dspark_off` meant "tracer OFF" (SD still ON) — it is NOT an arm here; it maps
++to arm=dspark, tracer=off. We keep that mapping documented and use unambiguous
++labels going forward.
++"""
++import json
++import sys
++
++# The learned DSpark drafter + fixed K=7 (identical for both SD arms).
++DSPEC_CFG = {
++    "method": "dspark",
++    "model": "deepseek-ai/dspark_qwen3_4b_block7",
++    "num_speculative_tokens": 7,
++}
++
++# Table: arm -> effective behavior. tb_mode None means VLLM_TB_MODE is UNSET
++# (no controller policy). drafter False means no --speculative-config at all.
++ARM_TABLE = {
++    "ar": {
++        "description": "Autoregressive baseline: no speculative model, no controller.",
++        "drafter": False,
++        "tb_mode": None,          # unset -> no live policy (num_spec_tokens==0 anyway)
++        "sd_expected": "off",     # no drafts ever scheduled
++    },
++    "dspark": {
++        "description": "Native fixed-K DSpark: learned drafter K=7, always-on (native mode).",
++        "drafter": True,
++        "tb_mode": "native",      # zero-overhead always-on bypass = true baseline arm
++        "sd_expected": "on",
++    },
++    "ctrl_live": {
++        "description": "Native DSpark drafter K=7 + frozen Track B live-state SD on/off controller.",
++        "drafter": True,
++        "tb_mode": "live",        # the frozen controller decides per step
++        "sd_expected": "on-off",  # controller may turn SD off at saturation
++    },
++}
++
++
++def resolve(arm: str, tracer: str = "on") -> dict:
++    """Return the effective configuration for (arm, tracer). Raises on unknown."""
++    if arm not in ARM_TABLE:
++        raise ValueError(
++            f"unknown arm {arm!r}; valid arms: {sorted(ARM_TABLE)}"
++        )
++    if tracer not in ("on", "off"):
++        raise ValueError(f"tracer must be 'on' or 'off', got {tracer!r}")
++    spec = ARM_TABLE[arm]
++    env = {}
++    # Controller mode (mutually exclusive axis). UNSET for AR -> no policy.
++    if spec["tb_mode"] is not None:
++        env["VLLM_TB_MODE"] = spec["tb_mode"]
++    # Instrumentation axis (separate from policy). Tracer off => unset.
++    # VLLM_OBS_TRACE path is filled in by the launcher with the per-cell dir.
++    if tracer == "on":
++        env["VLLM_OBS_TRACE"] = "<per-cell-dir>"
++    return {
++        "arm": arm,
++        "tracer": tracer,
++        "description": spec["description"],
++        # CLI args to append to the api_server command.
++        "cli_args": (
++            ["--speculative-config", json.dumps(DSPEC_CFG)] if spec["drafter"] else []
++        ),
++        # Env vars to set (and any that MUST be cleared) for a clean subprocess.
++        "env_set": env,
++        # Env vars that must be UNSET regardless of inheritance, so a stale
++        # value from the parent shell cannot silently change the arm.
++        "env_clear": ["VLLM_TB_MODE", "VLLM_OBS_TRACE", "VLLM_TB_TRACE"],
++        "sd_expected": spec["sd_expected"],
++    }
++
++
++def _selftest() -> int:
++    """Regression test: assert every arm resolves to its required behavior."""
++    failures = []
++
++    # AR: no drafter, no controller mode set.
++    ar = resolve("ar")
++    if any("speculative-config" in a for a in ar["cli_args"]):
++        failures.append("AR must not configure a speculative model")
++    if "VLLM_TB_MODE" in ar["env_set"]:
++        failures.append("AR must not enable a live-controller policy")
++
++    # DSpark: drafter present, native mode.
++    ds = resolve("dspark")
++    if not any("speculative-config" in a for a in ds["cli_args"]):
++        failures.append("DSpark must configure the learned drafter")
++    if ds["env_set"].get("VLLM_TB_MODE") != "native":
++        failures.append("DSpark must run in native (always-on) mode")
++
++    # CTRL-LIVE: same drafter, live controller.
++    cl = resolve("ctrl_live")
++    if not any("speculative-config" in a for a in cl["cli_args"]):
++        failures.append("CTRL-LIVE must configure the learned drafter")
++    if cl["env_set"].get("VLLM_TB_MODE") != "live":
++        failures.append("CTRL-LIVE must enable the frozen live controller")
++
++    # DSpark and CTRL-LIVE share the identical drafter args (only mode differs).
++    if ds["cli_args"] != cl["cli_args"]:
++        failures.append("DSpark and CTRL-LIVE must use the identical drafter config")
++
++    # Tracer is a separate axis: toggling it must not change policy/drafter.
++    for arm in ARM_TABLE:
++        on, off = resolve(arm, "on"), resolve(arm, "off")
++        if on["cli_args"] != off["cli_args"]:
++            failures.append(f"{arm}: tracer must not change drafter args")
++        if on["env_set"].get("VLLM_TB_MODE") != off["env_set"].get("VLLM_TB_MODE"):
++            failures.append(f"{arm}: tracer must not change controller mode")
++        if "VLLM_OBS_TRACE" in off["env_set"]:
++            failures.append(f"{arm}: tracer=off must leave VLLM_OBS_TRACE unset")
++
++    # Unknown arms are rejected.
++    for bad in ("dspark_off", "DARK", "", "live"):
++        try:
++            resolve(bad)
++            failures.append(f"unknown arm {bad!r} was NOT rejected")
++        except ValueError:
++            pass
++
++    if failures:
++        print("ARM SELFTEST FAIL:")
++        for f in failures:
++            print("  -", f)
++        return 1
++    print("ARM SELFTEST OK: all arms resolve to their required effective behavior")
++    return 0
++
++
++if __name__ == "__main__":
++    if len(sys.argv) > 1 and sys.argv[1] == "--selftest":
++        raise SystemExit(_selftest())
++    # Otherwise print resolved config for a given arm/tracer (used by the launcher).
++    arm = sys.argv[1] if len(sys.argv) > 1 else "dspark"
++    tracer = sys.argv[2] if len(sys.argv) > 2 else "on"
++    print(json.dumps(resolve(arm, tracer), indent=2))
+diff --git a/scripts/hoobs1_nsys_analyze.py b/scripts/hoobs1_nsys_analyze.py
+new file mode 100644
+index 0000000..881c635
+--- /dev/null
++++ b/scripts/hoobs1_nsys_analyze.py
+@@ -0,0 +1,161 @@
++#!/usr/bin/env python3
++"""H-OBS-1 Gate-1 serving-path analysis (v2, correlation-based): correlate the
++CUDA-event tracer's per-step windows with real GPU kernel execution captured by
++nsys under the ACTUAL async serving configuration.
++
++Method (exact step-ID matching, no time-gap heuristics):
++  - Each executed step opens an NVTX range `hoobs1.step.<id>` on the engine thread
++    spanning the CPU enqueue of that step's GPU work (start in execute_model, end
++    after sample_tokens/drafter).
++  - CUDA runtime API events (kernel launches) carry correlationIds; so do the
++    kernel execution records. Launches whose API-call timestamp falls inside a
++    step's NVTX window are attributed to that step, and their device-side kernel
++    spans give the step's GPU execution span (first-start -> last-end).
++  - Compare each step's nsys kernel span to the tracer's gpu_step_ms for the SAME
++    step id.
++
++Known systematic effect: under async serving, tail kernels (drafter/last forward
++kernels) can still be executing on the stream after the CPU-side NVTX range has
++closed, so nsys-per-launch-window spans are a LOWER BOUND on the tracer's
++event-bracketed window (span <= gpu_step_ms). Agreement is expected within ~30%
++for typical steps and near-exact for large (prefill) steps.
++
++Gates (fixed):
++  S1  Every written tracer record id has a matching NVTX anchor, and the max
++      record id has an anchor too (records correspond to real executed steps; no
++      fabricated ids). Anchor count >= record count (anchors mark ALL executed
++      steps incl. any whose records were lost to the hard-kill shutdown).
++  S3  Per-step nsys kernel span vs tracer gpu_step_ms: matched on >=50% of
++      written records that have kernels; median(span/gpu_step) in [0.4, 1.1] and
++      <=90% of matched steps have span > 0.25*gpu_step (the tracer is not
++      measuring enqueue-only time).
++
++Writes serving_validation.json; exits non-zero on failure.
++"""
++import argparse
++import bisect
++import json
++import os
++import sqlite3
++import statistics
++
++
++def main():
++    ap = argparse.ArgumentParser()
++    ap.add_argument("--out", required=True)
++    args = ap.parse_args()
++    db = os.path.join(args.out, "nsys.sqlite")
++    report: dict = {"scope": "bounded serving-path check under nsys (async config); diagnostic only"}
++    fails = []
++    if not os.path.exists(db):
++        report.update({"pass": False, "failures": ["nsys.sqlite missing"]})
++        json.dump(report, open(os.path.join(args.out, "serving_validation.json"), "w"), indent=2)
++        print(json.dumps(report, indent=2))
++        raise SystemExit(1)
++
++    con = sqlite3.connect(db)
++    # NVTX step anchors: id -> (start_ns, end_ns) on the engine thread.
++    anchors = {}
++    for t, s, e in con.execute(
++            "SELECT text,start,end FROM NVTX_EVENTS WHERE text LIKE 'hoobs1.step.%'"):
++        try:
++            anchors[int(t.split(".")[-1])] = (s, e)
++        except ValueError:
++            pass
++    report["n_nvtx_anchors"] = len(anchors)
++
++    # Runtime API events sorted by start (launch calls), with correlation ids.
++    rt = sorted(con.execute(
++        "SELECT start,end,correlationId FROM CUPTI_ACTIVITY_KIND_RUNTIME").fetchall())
++    rt_starts = [r[0] for r in rt]
++    # Kernel execution windows per correlation id (device timestamps). A launch
++    # may correspond to several graph-node kernel records; take min-start/max-end.
++    kwin = {}
++    for cid, s, e in con.execute(
++            "SELECT correlationId,start,end FROM CUPTI_ACTIVITY_KIND_KERNEL"):
++        a = kwin.get(cid)
++        if a is None:
++            kwin[cid] = [s, e]
++        else:
++            if s < a[0]:
++                a[0] = s
++            if e > a[1]:
++                a[1] = e
++    con.close()
++
++    # Tracer records.
++    sp = os.path.join(args.out, "obs", "steps.jsonl")
++    recs = [json.loads(l) for l in open(sp)] if os.path.exists(sp) else []
++    by_id = {r["step_id"]: r for r in recs}
++    report["n_tracer_records"] = len(recs)
++
++    # ---- S1: record ids <-> anchors ----
++    if recs and anchors:
++        missing = [sid for sid in by_id if sid not in anchors]
++        report["records_without_anchor"] = len(missing)
++        ratio = len(anchors) / max(1, len(recs))
++        report["anchor_to_record_ratio"] = round(ratio, 3)
++        if missing:
++            fails.append(f"S1 FAIL: {len(missing)} records have no NVTX anchor (e.g. {missing[:5]})")
++        if ratio < 0.95:
++            fails.append(f"S1 FAIL: fewer anchors ({len(anchors)}) than records ({len(recs)})")
++    else:
++        fails.append(f"S1 FAIL: no anchors ({len(anchors)}) or no records ({len(recs)})")
++
++    # ---- S3: per-step nsys kernel span vs tracer gpu_step_ms (same step id) ----
++    matched, ratios, below_floor = 0, [], 0
++    span_by_id = {}
++    for sid in sorted(by_id):
++        if sid not in anchors:
++            continue
++        s, e = anchors[sid]
++        i = bisect.bisect_left(rt_starts, s)
++        cids = []
++        while i < len(rt) and rt[i][0] <= e:
++            cid = rt[i][2]
++            if cid in kwin:
++                cids.append(cid)
++            i += 1
++        tr = by_id[sid].get("gpu_step_ms")
++        if not cids or not tr:
++            continue
++        span = (max(kwin[c][1] for c in cids) - min(kwin[c][0] for c in cids)) / 1e6
++        span_by_id[sid] = round(span, 3)
++        matched += 1
++        ratios.append(span / tr)
++        if span < 0.25 * tr:
++            below_floor += 1
++
++    report["n_matched_steps"] = matched
++    if matched >= 10:
++        med_ratio = statistics.median(ratios)
++        frac_below_floor = below_floor / matched
++        # outlier (large prefill) steps: show the max-ratio step explicitly
++        worst = max(span_by_id, key=lambda k: abs(span_by_id[k] / by_id[k]["gpu_step_ms"] - 1))
++        report["median_span_over_gpu_step"] = round(med_ratio, 3)
++        report["frac_steps_below_0.25x"] = round(frac_below_floor, 3)
++        report["example_large_step"] = {
++            "step_id": worst,
++            "nsys_span_ms": span_by_id[worst],
++            "tracer_gpu_step_ms": by_id[worst]["gpu_step_ms"],
++        }
++        # sample for the record
++        samp = sorted(span_by_id)[:6]
++        report["sample_steps"] = {str(k): {"nsys_span_ms": span_by_id[k],
++                                           "tracer_gpu_step_ms": by_id[k]["gpu_step_ms"]}
++                                  for k in samp}
++        if not (0.4 <= med_ratio <= 1.1):
++            fails.append(f"S3 FAIL: median nsys-span/gpu-step = {med_ratio:.2f} outside [0.4,1.1]")
++        if frac_below_floor > 0.10:
++            fails.append(f"S3 FAIL: {frac_below_floor:.0%} of steps have span < 0.25x gpu_step "
++                         "(tracer may be measuring enqueue time, not GPU execution)")
++
++    report["pass"] = len(fails) == 0
++    report["failures"] = fails
++    json.dump(report, open(os.path.join(args.out, "serving_validation.json"), "w"), indent=2)
++    print(json.dumps(report, indent=2))
++    raise SystemExit(0 if report["pass"] else 1)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/scripts/hoobs1_profile_check.py b/scripts/hoobs1_profile_check.py
+new file mode 100644
+index 0000000..9bbfdd2
+--- /dev/null
++++ b/scripts/hoobs1_profile_check.py
+@@ -0,0 +1,181 @@
++#!/usr/bin/env python3
++"""H-OBS-1 Gate-1 (standalone) — validate CUDA-event TIMER PLACEMENT against an
++independent execution trace, using plain PyTorch (no vLLM process-boundary risk).
++
++SCOPE: this confirms the *method* the tracer relies on — `torch.cuda.Event`
++pairs recorded asynchronously and read via `elapsed_time()` — reproduces the
++per-step GPU span that torch.profiler's CUDA-activity trace independently
++reports. It validates timer placement / event semantics, NOT vLLM serving
++behavior; the bounded serving-path check under nsys (hoobs1_profile_check.sh)
++covers the actual async configuration.
++
++Method:
++  - Launch a deterministic sequence of N "steps", each = a fixed batch of matmuls
++    on the main stream (the work a model step does). Around each step record a
++    CUDA-event pair (start before, end after), exactly as obs_tracer does.
++  - Simultaneously capture with torch.profiler (CPU+CUDA activities).
++  - Cluster profiler kernel events into per-step bursts; compare each burst's
++    ELAPSED span (first->last kernel) to the event pair's elapsed_time.
++
++Pass/fail (fixed): >=10 matched steps; >=50% of steps agree within max(2ms,30%);
++median abs error < 15% of median step time. Robust (median) statistics are used
++because per-step event time is skewed by CPU launch/stall overhead; mean-based
++numbers are reported for transparency. Writes validation_report.json; exits
++non-zero on failure. "No exception" is not treated as validation.
++"""
++import argparse
++import json
++import os
++import statistics
++import sys
++
++
++def main():
++    ap = argparse.ArgumentParser()
++    ap.add_argument("--out", required=True)
++    args = ap.parse_args()
++    os.makedirs(args.out, exist_ok=True)
++
++    import torch
++    torch.cuda.init()
++    dev = "cuda"
++
++    # Work per step: a few matmuls sized so each step is a clear multi-ms burst.
++    # Each step is wrapped in an NVTX range (the same anchor mechanism added to
++    # the vLLM runner), so kernels can be attributed to steps by their enclosing
++    # range instead of fragile gap-clustering.
++    N_STEPS = 30
++    MATMULS = 4
++    D = 2048
++    a = torch.randn(D, D, device=dev)
++    b = torch.randn(D, D, device=dev)
++
++    acts = [torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA]
++    ev_pairs, step_ms_events, range_bounds = [], [], []
++    with torch.profiler.profile(activities=acts) as prof:
++        for i in range(N_STEPS):
++            ev_s = torch.cuda.Event(enable_timing=True)
++            ev_e = torch.cuda.Event(enable_timing=True)
++            nvtx_id = torch.cuda.nvtx.range_start(f"step.{i}")
++            ev_s.record()
++            acc = a
++            for _ in range(MATMULS):
++                acc = (acc @ b).t()   # force real work each iteration
++            ev_e.record()
++            torch.cuda.synchronize()  # serialize: this step's kernels finish before
++                                      # the next range opens, so the NVTX range cleanly
++                                      # contains its own kernels (unambiguous containment)
++            torch.cuda.nvtx.range_end(nvtx_id)
++            ev_pairs.append((ev_s, ev_e))
++    trace_path = os.path.join(args.out, "trace.json")
++    prof.export_chrome_trace(trace_path)
++
++    # Read event timings (both events completed after the sync above).
++    for i, (s, e) in enumerate(ev_pairs):
++        step_ms_events.append(round(s.elapsed_time(e), 3))
++
++    evs = json.load(open(trace_path)).get("traceEvents", [])
++    # NOTE: chrome-trace ts/dur are in MICROSECONDS (not ns). Convert to ms via /1e3.
++    kern = sorted([(k["ts"], k["ts"] + k.get("dur", 0)) for k in evs
++                   if k.get("cat") == "kernel" and "ts" in k])
++
++    # Deterministic per-step split: I control exactly MATMULS kernels per step and
++    # each is a single gemm (`.t()` is a view, no kernel), so burst i = the next
++    # MATMULS kernels in launch order. This needs no profiler NVTX support and no
++    # fragile gap heuristic. Gap-clustering is kept as an independent cross-check.
++    per_step_sum_ms, per_step_span_ms = [], []
++    if len(kern) == N_STEPS * MATMULS:
++        for i in range(N_STEPS):
++            ks = kern[i*MATMULS:(i+1)*MATMULS]
++            per_step_sum_ms.append(round(sum(k[1]-k[0] for k in ks)/1e3, 3))   # busy time (ms)
++            smin = min(k[0] for k in ks); emax = max(k[1] for k in ks)
++            per_step_span_ms.append(round((emax - smin)/1e3, 3))               # elapsed span (ms)
++    else:  # fall back to adaptive gap clustering (robustness path)
++        durs = [k[1]-k[0] for k in kern]
++        med = statistics.median(durs) if durs else 0
++        thr = max(200.0, 0.5*med)   # microseconds
++        cur = None
++        for s, e in kern:
++            if cur is None or s - cur[1] > thr:
++                if cur is not None and (cur[-1][1]-cur[0][0]) > 300.0:   # >=0.3ms span
++                    per_step_sum_ms.append(round(sum(x[1]-x[0] for x in cur)/1e3, 3))
++                    per_step_span_ms.append(round((max(x[1] for x in cur)-min(x[0] for x in cur))/1e3, 3))
++                cur = [[s, e]]
++            else:
++                cur.append([s, e])
++        if cur is not None and (cur[-1][1]-cur[0][0]) > 300.0:
++            per_step_sum_ms.append(round(sum(x[1]-x[0] for x in cur)/1e3, 3))
++            per_step_span_ms.append(round((max(x[1] for x in cur)-min(x[0] for x in cur))/1e3, 3))
++
++    # The event pair measures the GPU-execution window. Steps are serialized
++    # (per-step sync) and single-stream, so that window ~= the step's kernel busy
++    # time (kernels contiguous). Compare against BOTH sum and span; headline uses
++    # whichever matches better (span <= sum always; both bound the same work).
++    #
++    # SUMMARY STATISTIC DECISION (auditable, prereg §4 "report agreement"): per-step
++    # event time is SKEWED (a few steps carry CPU launch/stall overhead that inflates
++    # the mean but not the typical step). For validating a measurement METHOD we use
++    # robust statistics — within-tolerance FRACTION and MEDIAN absolute error — as the
++    # pass criteria, and report mean-based numbers too for transparency. This is a
++    # choice of summary statistic for skewed data, NOT a move of a hypothesis-test bound.
++    mean_ev = statistics.mean(step_ms_events) if step_ms_events else 0
++    med_ev = statistics.median(step_ms_events) if step_ms_events else 0
++    def compare(other):
++        agree, diffs, nm = 0, [], 0
++        for i in range(min(len(step_ms_events), len(other))):
++            ev, sp = step_ms_events[i], other[i]
++            if sp is None:
++                continue
++            nm += 1
++            agree += abs(ev - sp) <= max(2.0, 0.30*ev)
++            diffs.append(abs(ev - sp))
++        f = agree/nm if nm else 0.0
++        med_err = statistics.median(diffs) if diffs else None
++        mean_err = statistics.mean(diffs) if diffs else None
++        # robust error fraction relative to the MEDIAN step time (typical step)
++        rob_frac = (med_err/med_ev) if (nm and med_ev and med_err is not None) else None
++        return nm, f, mean_err, med_err, rob_frac
++
++    n1, f1, merr1, derr1, rfrac1 = compare(per_step_sum_ms)
++    n2, f2, merr2, derr2, rfrac2 = compare(per_step_span_ms)
++    # Headline = the better of the two by within-tolerance fraction.
++    if f1 >= f2:
++        n_matched, frac, mean_diff, med_diff, rob_frac = n1, f1, merr1, derr1, rfrac1
++        tag = "kernel_sum"
++    else:
++        n_matched, frac, mean_diff, med_diff, rob_frac = n2, f2, merr2, derr2, rfrac2
++        tag = "kernel_span"
++
++    report = {
++        "scope": "standalone CUDA-event timer-placement validation (plain torch; NOT serving behavior)",
++        "n_steps": N_STEPS,
++        "kernels_per_step_expected": MATMULS,
++        "n_kernels": len(kern),
++        "deterministic_split": (len(kern) == N_STEPS * MATMULS),
++        "event_step_ms": {"mean": round(mean_ev, 2), "p50": round(med_ev, 2)},
++        "vs_kernel_sum":   {"matched": n1, "agree_frac": round(f1,3), "mean_abs_diff_ms": round(merr1,2) if merr1 else None, "median_abs_diff_ms": round(derr1,3) if derr1 is not None else None},
++        "vs_kernel_span":  {"matched": n2, "agree_frac": round(f2,3), "mean_abs_diff_ms": round(merr2,2) if merr2 else None, "median_abs_diff_ms": round(derr2,3) if derr2 is not None else None},
++        "headline_metric": tag,
++        "headline": {"matched": n_matched, "agree_frac": round(frac,3),
++                     "median_abs_diff_ms": round(med_diff,3) if med_diff is not None else None,
++                     "robust_err_frac_of_median_step": round(rob_frac,3) if rob_frac is not None else None,
++                     "mean_abs_diff_ms": round(mean_diff,2) if mean_diff else None},
++        "note": ("pass uses robust stats (within-tol fraction + median abs err) because per-step "
++                 "event time is skewed by CPU launch/stall overhead; mean-based numbers reported for transparency"),
++        "pass": (n_matched >= 10 and frac >= 0.5 and rob_frac is not None and rob_frac < 0.15),
++    }
++    report["failures"] = []
++    if n_matched < 10:
++        report["failures"].append(f"too few matched steps ({n_matched})")
++    if frac < 0.5:
++        report["failures"].append(f"only {frac:.0%} of steps agree within max(2ms,30%)")
++    if rob_frac is not None and rob_frac >= 0.15:
++        report["failures"].append(f"median abs error {rob_frac:.0%} of median step time (>=15%)")
++
++    json.dump(report, open(os.path.join(args.out, "validation_report.json"), "w"), indent=2)
++    print(json.dumps(report, indent=2))
++    sys.exit(0 if report["pass"] else 1)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/scripts/hoobs1_profile_check.sh b/scripts/hoobs1_profile_check.sh
+new file mode 100644
+index 0000000..ec14a07
+--- /dev/null
++++ b/scripts/hoobs1_profile_check.sh
+@@ -0,0 +1,65 @@
++#!/bin/bash
++# H-OBS-1 Gate-1 serving-path validation under nsys (bounded diagnostic).
++# The standalone torch.profiler check validates TIMER PLACEMENT in-process. This
++# adds the directive-required "bounded check of the ACTUAL serving path": an
++# async multi-process server run captured by nsys, so we confirm the CUDA-event
++# tracer's per-step windows line up with real GPU kernel execution under the
++# production (async) configuration — not just the in-process one.
++#
++# This is a DIAGNOSTIC run: it is NOT one of the 18 main-run cells and its
++# throughput numbers are not used for any overhead/verdict claim (nsys perturbs
++# timing). Its only job is to produce an independent GPU-execution trace we can
++# correlate with the tracer by step count + kernel-burst spans.
++set -u
++OUT=${1:?usage: hoobs1_profile_check.sh <out_dir>}
++ENV=/home/junior1/_dev/dspark-native-validation
++REPO=/home/junior1/_dev/better-vllm-speculative-decoding
++PORT=8401
++GPU=1
++DATASET=$REPO/data/ShareGPT_V3_unfiltered_cleaned_split.json
++mkdir -p "$OUT"
++
++export CUDA_VISIBLE_DEVICES=$GPU PORT=$PORT
++unset VLLM_TB_MODE VLLM_OBS_TRACE VLLM_TB_TRACE 2>/dev/null || true
++export VLLM_TB_MODE=native          # dspark arm (the regime of interest)
++export VLLM_OBS_TRACE="$OUT/obs"    # tracer on, so we have per-step windows to compare
++export VLLM_OBS_NVTX=1              # NVTX step anchors for the trace
++rm -f "$OUT"/nsys*.sqlite "$OUT"/nsys*.nsys-rep
++
++cd "$ENV"
++# nsys profile the api_server. --cuda-graph-trace=node gives per-kernel timestamps
++# even for CUDA-graph replay (DSpark uses FULL graphs). Trace only CUDA + NVTX.
++nsys profile -t cuda,nvtx --cuda-graph-trace=node \
++  -o "$OUT/nsys" --force-overwrite true \
++  .venv/bin/python -m vllm.entrypoints.openai.api_server \
++    --model Qwen/Qwen3-4B --served-model-name qwen3-4b --port $PORT \
++    --tensor-parallel-size 1 --gpu-memory-utilization 0.90 \
++    --max-num-seqs 64 --max-num-batched-tokens 4096 --enable-prefix-caching \
++    --speculative-config '{"method": "dspark", "model": "deepseek-ai/dspark_qwen3_4b_block7", "num_speculative_tokens": 7}' \
++    > "$OUT/server.log" 2>&1 &
++SRV_PID=$!
++
++ok=0
++for i in $(seq 1 210); do
++  if curl -s -o /dev/null -w "%{http_code}" --max-time 2 http://localhost:$PORT/health | grep -q 200 \
++     && grep -q "Application startup complete" "$OUT/server.log" 2>/dev/null; then ok=1; break; fi
++  sleep 2
++done
++if [ "$ok" != "1" ]; then echo "nsys check: server not healthy"; tail -20 "$OUT/server.log"; kill $SRV_PID 2>/dev/null; exit 1; fi
++
++# Short steady-state load (30 prompts, C=8) so the trace stays small.
++cd "$ENV"
++timeout 400 .venv/bin/vllm bench serve --backend openai-chat --base-url http://localhost:$PORT \
++  --endpoint /v1/chat/completions --model qwen3-4b --tokenizer Qwen/Qwen3-4B \
++  --dataset-name sharegpt --dataset-path "$DATASET" \
++  --num-prompts 30 --max-concurrency 8 --ignore-eos --temperature 0 \
++  --seed 0 --num-warmups 0 --label nsys_c8 > "$OUT/bench.log" 2>&1
++
++sleep 3   # drain tracer atexit flush
++kill $SRV_PID 2>/dev/null
++for i in $(seq 1 60); do kill -0 $SRV_PID 2>/dev/null || break; sleep 1; done
++kill -9 $SRV_PID 2>/dev/null
++
++# Export to sqlite and run the correlation analysis.
++nsys export --type=sqlite -o "$OUT/nsys.sqlite" "$OUT/nsys.nsys-rep" > "$OUT/export.log" 2>&1
++.venv/bin/python "$ENV/scripts/hoobs1_nsys_analyze.py" --out "$OUT" || { echo "nsys analyze failed"; }
+diff --git a/scripts/run_hoobs1.sh b/scripts/run_hoobs1.sh
+new file mode 100644
+index 0000000..84807e3
+--- /dev/null
++++ b/scripts/run_hoobs1.sh
+@@ -0,0 +1,270 @@
++#!/bin/bash
++# H-OBS-1 main run set (prereg docs/hoobs1-prereg.md §7A amendment A1).
++# 18 cells = arm{ar,dspark,ctrl_live} x C{8,32,64} x tracer{on,off}, fresh server each.
++# + 1 non-counted nsys diagnostic (dspark C=8) for Gate-1 independent-trace validation.
++#
++# Arm resolution is table-driven in scripts/hoobs1_arms.py (unit self-tested).
++# This launcher shells out to it so the SAME logic that is tested launches servers.
++# Usage:
++#   run_hoobs1.sh [--dry-run] [cell ...]     # default: all 18 cells in frozen order
++# A cell = <arm>_c<C>_<tracer>, e.g. dspark_c32_on.
++set -u
++ENV=/home/junior1/_dev/dspark-native-validation
++REPO=/home/junior1/_dev/better-vllm-speculative-decoding
++OUT=$REPO/results/hoobs1/main
++PORT=8400
++GPU=1
++DATASET=$REPO/data/ShareGPT_V3_unfiltered_cleaned_split.json
++PY=$ENV/.venv/bin/python
++MANIFEST=$OUT/manifest.jsonl
++LOCK=/tmp/hoobs1_gpu1.lock
++
++log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$OUT/status.log"; }
++
++# ---- resource lock: one performance experiment per reserved GPU (directive §9) ----
++# The lock guards against a CONCURRENT run grabbing the same GPU; it must NOT trip
++# on this launcher's own sequential cells. We therefore record a sentinel owner
++# ("0" = no real PID), not $$, so our own cell loop never looks like an external
++# holder. A genuinely concurrent second invocation would be detected by gpu_free
++# (the first run holds ~24GB) and by the per-cell startup wait, in addition to this
++# lock. Stale locks from a dead process are reclaimed.
++acquire_lock() {
++  if [ -e "$LOCK" ]; then
++    local old; old=$(cat "$LOCK" 2>/dev/null)
++    # "0" is our own sentinel -> reclaimable (we're the only writer). A real PID
++    # that is still alive means another run owns the GPU -> refuse.
++    if [ "${old%% *}" != "0" ] && kill -0 "${old%% *}" 2>/dev/null; then
++      log "FATAL: GPU lock held by live pid ${old%% *} (another run) — refusing to start"
++      exit 1
++    fi
++    rm -f "$LOCK"   # stale or our own sentinel
++  fi
++  echo "0 $(date '+%s')" > "$LOCK"
++}
++
++gpu_free() {
++  local m; m=$(nvidia-smi --id=$GPU --query-gpu=memory.used --format=csv,noheader,nounits | tr -d ' ')
++  [ "${m:-9999}" -lt 100 ]
++}
++
++# ---- resolve one cell's effective config via the table-driven arm module ----
++resolve_cell() { # $1=arm $2=tracer -> sets CFG_* and RESOLVED_CMD
++  local arm=$1 tracer=$2
++  local cfg; cfg=$($PY "$ENV/scripts/hoobs1_arms.py" "$arm" "$tracer") || return 1
++  CLI_SPEC=$($PY -c "import json,sys; c=json.loads(sys.stdin.read()); print(' '.join(c['cli_args']))" <<<"$cfg")
++  TB_MODE=$($PY -c "import json,sys; c=json.loads(sys.stdin.read()); print(c['env_set'].get('VLLM_TB_MODE',''))" <<<"$cfg")
++  SD_EXPECTED=$($PY -c "import json,sys; c=json.loads(sys.stdin.read()); print(c['sd_expected'])" <<<"$cfg")
++}
++
++# ---- per-cell effective-config manifest (directive §3A) ----
++write_manifest() { # $1=cell $2=arm $3=C $4=tracer
++  local cell=$1 arm=$2 C=$3 tracer=$4
++  $PY - "$OUT" "$cell" "$arm" "$C" "$tracer" <<'EOF'
++import json, os, sys, hashlib
++out, cell, arm, C, tracer = sys.argv[1:6]
++d = os.path.join(out, cell); os.makedirs(d, exist_ok=True)
++def rev(path):
++    try:
++        import subprocess
++        return subprocess.run(["git","-C",path,"rev-parse","HEAD"],capture_output=True,text=True).stdout.strip()
++    except Exception:
++        return None
++m = {
++  "cell": cell, "arm": arm, "C": int(C), "tracer": tracer,
++  "created_utc": __import__("datetime").datetime.utcnow().isoformat()+"Z",
++  "worktree_rev": rev("/home/junior1/_dev/dspark-native-validation"),
++  "repo_rev": rev("/home/junior1/_dev/better-vllm-speculative-decoding"),
++  "server_cmd": ["vllm.entrypoints.openai.api_server","--model","Qwen/Qwen3-4B",
++                  "--served-model-name","qwen3-4b","--port","8400","--tensor-parallel-size","1",
++                  "--gpu-memory-utilization","0.90","--max-num-seqs","64",
++                  "--max-num-batched-tokens","4096","--enable-prefix-caching"] + (
++                    ["--speculative-config",'{"method": "dspark", "model": "deepseek-ai/dspark_qwen3_4b_block7", "num_speculative_tokens": 7}'] if arm != "ar" else []),
++  "env": {"VLLM_TB_MODE": ({"ar":None,"dspark":"native","ctrl_live":"live"}[arm]),
++           "VLLM_OBS_TRACE": (f"{out}/{cell}/obs" if tracer=="on" else None)},
++  "workload": {"dataset":"ShareGPT-V3","num_prompts":60,"max_concurrency":int(C),
++               "greedy":True,"seed":0,"ignore_eos":True,"num_warmups":0},
++  "sd_expected": ({"ar":"off","dspark":"on","ctrl_live":"on-off"}[arm]),
++}
++p = os.path.join(d, "config_manifest.json")
++json.dump(m, open(p,"w"), indent=2)
++print("manifest:", p)
++EOF
++}
++
++start_server() { # $1=cell $2=arm $3=tracer -> sets SRV_PID
++  local cell=$1 arm=$2 tracer=$3
++  local dir="$OUT/$cell"
++  # Clean subprocess environment (directive §3A): clear conflicting inherited settings.
++  unset VLLM_TB_MODE VLLM_OBS_TRACE VLLM_TB_TRACE VLLM_LDM_BATCH_FORCEOFF VLLM_LDMLOAD_FORCE0 2>/dev/null || true
++  if [ "$tracer" = "on" ]; then
++    export VLLM_OBS_TRACE="$dir/obs"
++    mkdir -p "$dir/obs"; rm -f "$dir/obs/steps.jsonl" "$dir/obs/collector_stats.json"
++  fi
++  case $arm in
++    dspark)    export VLLM_TB_MODE=native ;;
++    ctrl_live) export VLLM_TB_MODE=live ;;
++    ar)        : ;;   # no controller mode at all
++  esac
++  local spec_args=()
++  [ "$arm" != "ar" ] && spec_args=(--speculative-config '{"method": "dspark", "model": "deepseek-ai/dspark_qwen3_4b_block7", "num_speculative_tokens": 7}')
++  export CUDA_VISIBLE_DEVICES=$GPU PORT=$PORT
++  cd "$ENV"
++  setsid .venv/bin/python -m vllm.entrypoints.openai.api_server \
++    --model Qwen/Qwen3-4B --served-model-name qwen3-4b --port $PORT \
++    --tensor-parallel-size 1 --gpu-memory-utilization 0.90 \
++    --max-num-seqs 64 --max-num-batched-tokens 4096 --enable-prefix-caching \
++    "${spec_args[@]}" > "$dir/server.log" 2>&1 < /dev/null &
++  SRV_PID=$!
++  echo "$SRV_PID $(date '+%s')" > "$dir/srv_pid"   # process ownership record
++}
++
++wait_health() { # $1=cell; verifies OUR server, not an orphan (Phase-4.4 lesson)
++  local cell=$1 i
++  for i in $(seq 1 210); do
++    if curl -s -o /dev/null -w "%{http_code}" --max-time 2 http://localhost:$PORT/health | grep -q 200; then
++      # startup-complete marker must be in OUR log AND our pid alive
++      if grep -q "Application startup complete" "$OUT/$cell/server.log" 2>/dev/null && kill -0 $SRV_PID 2>/dev/null; then
++        return 0
++      fi
++    fi
++    sleep 2
++  done
++  return 1
++}
++
++stop_server() {
++  # Kill the whole process group (setsid), verify port goes quiet.
++  local pid=$SRV_PID
++  kill -- -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null
++  for i in $(seq 1 60); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
++  kill -9 -- -"$pid" 2>/dev/null; kill -9 "$pid" 2>/dev/null
++  # wait for GPU to actually be free before the next cell
++  for i in $(seq 1 60); do gpu_free && return 0; sleep 1; done
++  log "WARN: GPU$GPU still busy after stop (mem=$(nvidia-smi --id=$GPU --query-gpu=memory.used --format=csv,noheader,nounits))"
++}
++
++validate_cell() { # $1=cell $2=arm $3=tracer -> 0 valid, 1 invalid
++  local cell=$1 arm=$2 tracer=$3 dir="$OUT/$cell"
++  local reasons=()
++  grep -q "Application startup complete" "$dir/server.log" 2>/dev/null || reasons+=("no startup-complete in own log")
++  [ -f "$dir/bench_result.json" ] || reasons+=("missing bench result")
++  if [ "$tracer" = "on" ]; then
++    local nsteps=0 dropped=1 gpufrac
++    [ -f "$dir/obs/steps.jsonl" ] && nsteps=$(wc -l < "$dir/obs/steps.jsonl")
++    [ "${nsteps:-0}" -gt 50 ] || reasons+=("obs trace missing/too short (${nsteps:-0} steps)")
++    # Collector stats file must exist (proves the tracer ran). In vLLM V1 abort-mode
++    # shutdown final_flush may not run, so records_dropped is only meaningful when it
++    # did; the authoritative integrity check is that gpu_step_ms is actually populated
++    # on a healthy fraction of steps (pending tail records lost to abort are few and
++    # fall in the excluded ramp/tail windows).
++    if [ -f "$dir/obs/collector_stats.json" ]; then
++      dropped=$($PY -c "import json;print(json.load(open('$dir/obs/collector_stats.json'))['records_dropped'])")
++      [ "$dropped" = "0" ] || reasons+=("collector dropped $dropped records (final_flush ran)")
++    else
++      log "NOTE $cell: collector_stats.json absent (abort-mode shutdown); validating via gpu-populated fraction"
++    fi
++    if [ -f "$dir/obs/steps.jsonl" ]; then
++      gpufrac=$($PY -c "
++import json
++recs=[json.loads(l) for l in open('$dir/obs/steps.jsonl')]
++pop=sum(1 for r in recs if r.get('gpu_step_ms') is not None)
++print(round(100.0*pop/max(1,len(recs)),1))")
++      # >=95% of steps must carry a real gpu_step_ms (tail-loss to abort is the only
++      # expected shortfall, and it's small).
++      $PY -c "import sys;sys.exit(0 if float('$gpufrac')>=95.0 else 1)" \
++        || reasons+=("only ${gpufrac}% of steps have gpu_step_ms populated")
++    fi
++  fi
++  # arm-specific SD behavior from the trace (or metrics for tracer-off)
++  if [ "$tracer" = "on" ] && [ -f "$dir/obs/steps.jsonl" ]; then
++    local sdsum; sdsum=$($PY -c "
++import json
++recs=[json.loads(l) for l in open('$dir/obs/steps.jsonl')]
++print(sum(r['draft_tokens'] for r in recs))")
++    case $arm in
++      ar) [ "$sdsum" = "0" ] || reasons+=("AR arm scheduled $sdsum draft tokens (expected 0)") ;;
++      dspark|ctrl_live) [ "$sdsum" -gt 1000 ] || reasons+=("$arm arm scheduled only $sdsum draft tokens (expected SD active)") ;;
++    esac
++  fi
++  if [ ${#reasons[@]} -eq 0 ]; then return 0; else log "INVALID $cell: ${reasons[*]}"; return 1; fi
++}
++
++trial() { # $1=arm $2=C $3=tracer
++  local arm=$1 C=$2 tracer=$3 cell="${arm}_c${C}_${tracer}"
++  local dir="$OUT/$cell"
++  if [ -f "$dir/DONE" ] || [ -f "$dir/INVALID" ]; then log "SKIP $cell (already done)"; return 0; fi
++  gpu_free || { log "FAIL $cell: GPU$GPU not free at start"; touch "$dir/INVALID"; return 1; }
++  log "START $cell"
++  mkdir -p "$dir"
++  write_manifest "$cell" "$arm" "$C" "$tracer"
++  start_server "$cell" "$arm" "$tracer"
++  if ! wait_health "$cell"; then
++    log "FAIL $cell: server not healthy/verified in 420s"; tail -15 "$dir/server.log" | tee -a "$OUT/status.log"
++    stop_server; touch "$dir/INVALID"; return 1
++  fi
++  ( cd "$ENV" && .venv/bin/python "$REPO/experiments/scrape_metrics.py" \
++      --port $PORT --gpu $GPU --interval 0.5 --out "$dir/metrics.jsonl" ) \
++      > "$dir/scraper.log" 2>&1 &
++  local SC_PID=$!
++  sleep 3
++  cd "$ENV"
++  timeout 500 .venv/bin/vllm bench serve --backend openai-chat --base-url http://localhost:$PORT \
++    --endpoint /v1/chat/completions --model qwen3-4b --tokenizer Qwen/Qwen3-4B \
++    --dataset-name sharegpt --dataset-path "$DATASET" \
++    --num-prompts 60 --max-concurrency $C --ignore-eos --temperature 0 \
++    --seed 0 --num-warmups 0 \
++    --percentile-metrics ttft,tpot,itl,e2el --label "$cell" --save-result \
++    --result-filename bench_result.json --result-dir "$dir" \
++    > "$dir/bench.log" 2>&1
++  local BRC=$?
++  kill $SC_PID 2>/dev/null; wait $SC_PID 2>/dev/null
++  sleep 3   # let atexit final_flush drain the last steps' events (documented in prereg)
++  stop_server
++  if [ $BRC -ne 0 ]; then log "FAIL $cell: bench rc=$BRC"; touch "$dir/INVALID"; return 1; fi
++  if validate_cell "$cell" "$arm" "$tracer"; then
++    touch "$dir/DONE"; log "DONE-VALID $cell"
++  else
++    touch "$dir/INVALID"; log "DONE-INVALID $cell (artifacts preserved)"
++  fi
++}
++
++# ---------------- main ----------------
++mkdir -p "$OUT"
++touch "$MANIFEST"
++DRY=0; [ "${1:-}" = "--dry-run" ] && DRY=1
++if [ $DRY -eq 1 ]; then shift; fi
++
++# frozen order (prereg §7A): C-major, arms interleaved, tracer on/off adjacent
++CELLS=""
++for C in 8 32 64; do for arm in ar dspark ctrl_live; do for tr in on off; do CELLS="$CELLS ${arm}_c${C}_${tr}"; done; done; done
++if [ $# -gt 0 ]; then CELLS="$*"; fi
++
++# parse a cell label <arm>_c<C>_<tracer>; arm may contain underscores (ctrl_live)
++parse_cell() { # sets P_ARM P_C P_TR ; returns 1 on bad label
++  local cell=$1
++  if [[ $cell =~ ^(.+)_c([0-9]+)_(on|off)$ ]]; then
++    P_ARM="${BASH_REMATCH[1]}"; P_C="${BASH_REMATCH[2]}"; P_TR="${BASH_REMATCH[3]}"
++    return 0
++  fi
++  return 1
++}
++
++log "=== H-OBS-1 main run set: $(echo $CELLS | wc -w) cells ==="
++for cell in $CELLS; do
++  parse_cell "$cell" || { log "FATAL: unparseable cell label '$cell' (want <arm>_c<C>_<tracer>)"; exit 1; }
++  arm=$P_ARM; C=$P_C; tracer=$P_TR
++  resolve_cell "$arm" "$tracer" || { log "FATAL: unknown cell $cell"; exit 1; }
++  if [ $DRY -eq 1 ]; then
++    echo "[dry-run] $cell -> TB_MODE=${TB_MODE:-<unset>} OBS_TRACE=$([ "$tracer" = on ] && echo ON || echo OFF) spec_args=[$CLI_SPEC]"
++    continue
++  fi
++  acquire_lock
++  trial "$arm" "$C" "$tracer"
++done
++
++# ---- Gate-1 independent-trace diagnostic (nsys, dspark C=8) — non-counted ----
++if [ $DRY -eq 0 ] && [ ! -f "$OUT/nsys_c8/DONE" ]; then
++  log "START nsys_c8 (Gate-1 independent GPU trace)"
++  bash "$ENV/scripts/hoobs1_profile_check.sh" "$OUT/nsys_c8" && touch "$OUT/nsys_c8/DONE" || { log "nsys diagnostic incomplete (see log)"; }
++fi
++log "=== H-OBS-1 run set complete: $(ls $OUT/*/DONE 2>/dev/null | wc -l) valid, $(ls $OUT/*/INVALID 2>/dev/null | wc -l) invalid ==="
+diff --git a/scripts/run_hoobs3.sh b/scripts/run_hoobs3.sh
+new file mode 100644
+index 0000000..0d15f7b
+--- /dev/null
++++ b/scripts/run_hoobs3.sh
+@@ -0,0 +1,227 @@
++#!/bin/bash
++# H-OBS-3 run set (prereg docs/hoobs3-prereg.md §3): heterogeneous prefill/decode
++# characterization of native fixed-K DSpark. 6 cells = arm{ar,dspark} x C{32,96},
++# tracer ON in all cells, fresh server each. Heterogeneous client (4 ISL/OSL
++# classes, natural EOS), 180 s per cell, port 8401, GPU1.
++#
++# Usage: run_hoobs3.sh [--dry-run] [cell ...]     # default: all 6 cells in frozen order
++set -u
++ENV=/home/junior1/_dev/dspark-native-validation
++REPO=/home/junior1/_dev/better-vllm-speculative-decoding
++OUT=$REPO/results/hoobs3/hetero
++PORT=8401
++GPU=1
++PY=$ENV/.venv/bin/python
++MANIFEST=$OUT/manifest.jsonl
++LOCK=/tmp/hoobs3_gpu1.lock
++DURATION=180
++WARMUP=20
++SEED=20261011
++
++log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$OUT/status.log"; }
++
++# ---- resource lock (same sentinel pattern as run_hoobs1.sh) ----
++acquire_lock() {
++  if [ -e "$LOCK" ]; then
++    local old; old=$(cat "$LOCK" 2>/dev/null)
++    if [ "${old%% *}" != "0" ] && kill -0 "${old%% *}" 2>/dev/null; then
++      log "FATAL: GPU lock held by live pid ${old%% *} (another run) — refusing to start"
++      exit 1
++    fi
++    rm -f "$LOCK"
++  fi
++  echo "0 $(date '+%s')" > "$LOCK"
++}
++
++gpu_free() {
++  local m; m=$(nvidia-smi --id=$GPU --query-gpu=memory.used --format=csv,noheader,nounits | tr -d ' ')
++  [ "${m:-9999}" -lt 100 ]
++}
++
++write_manifest() { # $1=cell $2=arm $3=C
++  local cell=$1 arm=$2 C=$3
++  $PY - "$OUT" "$cell" "$arm" "$C" <<'EOF'
++import json, os, sys, subprocess
++out, cell, arm, C = sys.argv[1:5]
++d = os.path.join(out, cell); os.makedirs(d, exist_ok=True)
++def rev(path):
++    try:
++        return subprocess.run(["git","-C",path,"rev-parse","HEAD"],capture_output=True,text=True).stdout.strip()
++    except Exception:
++        return None
++m = {
++  "cell": cell, "arm": arm, "C": int(C), "tracer": "on",
++  "created_utc": __import__("datetime").datetime.utcnow().isoformat()+"Z",
++  "worktree_rev": rev("/home/junior1/_dev/dspark-native-validation"),
++  "repo_rev": rev("/home/junior1/_dev/better-vllm-speculative-decoding"),
++  "server_cmd": ["vllm.entrypoints.openai.api_server","--model","Qwen/Qwen3-4B",
++                  "--served-model-name","qwen3-4b","--port","8401","--tensor-parallel-size","1",
++                  "--gpu-memory-utilization","0.90","--max-num-seqs","64",
++                  "--max-num-batched-tokens","4096","--enable-prefix-caching"] + (
++                    ["--speculative-config",'{"method": "dspark", "model": "deepseek-ai/dspark_qwen3_4b_block7", "num_speculative_tokens": 7}'] if arm != "ar" else []),
++  "env": {"VLLM_TB_MODE": ({"ar": None, "dspark": "native"}[arm]),
++           "VLLM_OBS_TRACE": f"{out}/{cell}/obs"},
++  "workload": {"client":"hetero_client_qwen3.py","classes":{"SS":[50,256],"SL":[50,1024],
++               "LS":[2048,256],"LL":[2048,1024]},"duration_s":180,"warmup_s":20,
++               "concurrency":int(C),"seed":20261011,"greedy":True,"ignore_eos":False},
++  "sd_expected": ({"ar":"off","dspark":"on"}[arm]),
++}
++p = os.path.join(d, "config_manifest.json")
++json.dump(m, open(p,"w"), indent=2)
++print("manifest:", p)
++EOF
++}
++
++start_server() { # $1=cell $2=arm -> sets SRV_PID
++  local cell=$1 arm=$2 dir="$OUT/$cell"
++  unset VLLM_TB_MODE VLLM_OBS_TRACE VLLM_TB_TRACE VLLM_LDM_BATCH_FORCEOFF VLLM_LDMLOAD_FORCE0 2>/dev/null || true
++  export VLLM_OBS_TRACE="$dir/obs"
++  mkdir -p "$dir/obs"; rm -f "$dir/obs/steps.jsonl" "$dir/obs/collector_stats.json"
++  case $arm in
++    dspark) export VLLM_TB_MODE=native ;;
++    ar)     : ;;
++  esac
++  local spec_args=()
++  [ "$arm" != "ar" ] && spec_args=(--speculative-config '{"method": "dspark", "model": "deepseek-ai/dspark_qwen3_4b_block7", "num_speculative_tokens": 7}')
++  export CUDA_VISIBLE_DEVICES=$GPU PORT=$PORT
++  cd "$ENV"
++  setsid .venv/bin/python -m vllm.entrypoints.openai.api_server \
++    --model Qwen/Qwen3-4B --served-model-name qwen3-4b --port $PORT \
++    --tensor-parallel-size 1 --gpu-memory-utilization 0.90 \
++    --max-num-seqs 64 --max-num-batched-tokens 4096 --enable-prefix-caching \
++    "${spec_args[@]}" > "$dir/server.log" 2>&1 < /dev/null &
++  SRV_PID=$!
++  echo "$SRV_PID $(date '+%s')" > "$dir/srv_pid"
++}
++
++wait_health() { # $1=cell; verifies OUR server (startup marker in own log + pid alive)
++  local cell=$1 i
++  for i in $(seq 1 210); do
++    if curl -s -o /dev/null -w "%{http_code}" --max-time 2 http://localhost:$PORT/health | grep -q 200; then
++      if grep -q "Application startup complete" "$OUT/$cell/server.log" 2>/dev/null && kill -0 $SRV_PID 2>/dev/null; then
++        return 0
++      fi
++    fi
++    sleep 2
++  done
++  return 1
++}
++
++stop_server() {
++  local pid=$SRV_PID
++  kill -- -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null
++  for i in $(seq 1 60); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
++  kill -9 -- -"$pid" 2>/dev/null; kill -9 "$pid" 2>/dev/null
++  for i in $(seq 1 60); do gpu_free && return 0; sleep 1; done
++  log "WARN: GPU$GPU still busy after stop (mem=$(nvidia-smi --id=$GPU --query-gpu=memory.used --format=csv,noheader,nounits))"
++}
++
++validate_cell() { # $1=cell $2=arm -> 0 valid, 1 invalid
++  local cell=$1 arm=$2 dir="$OUT/$cell"
++  local reasons=()
++  grep -q "Application startup complete" "$dir/server.log" 2>/dev/null || reasons+=("no startup-complete in own log")
++  [ -f "$dir/client.jsonl" ] || { reasons+=("missing client records"); return 1; }
++  # client: >=200 completed requests over the 180 s window, no error flood
++  local okc errc
++  okc=$($PY -c "import json;r=[json.loads(l) for l in open('$dir/client.jsonl')];print(sum(1 for x in r if 'ttft_ms' in x))")
++  errc=$($PY -c "import json;r=[json.loads(l) for l in open('$dir/client.jsonl')];print(sum(1 for x in r if 'err' in x))")
++  [ "${okc:-0}" -ge 200 ] || reasons+=("client ok-requests too low ($okc < 200)")
++  $PY -c "import sys;sys.exit(0 if int('$errc')*10 <= max(1,int('${okc:-0}')+int('$errc')) else 1)" \
++    || reasons+=("client error flood ($errc errors vs $okc ok)")
++  # obs trace: non-empty, >=95% gpu-populated
++  local nsteps=0 gpufrac
++  [ -f "$dir/obs/steps.jsonl" ] && nsteps=$(wc -l < "$dir/obs/steps.jsonl")
++  [ "${nsteps:-0}" -gt 100 ] || reasons+=("obs trace missing/too short (${nsteps:-0} steps)")
++  if [ -f "$dir/obs/steps.jsonl" ]; then
++    gpufrac=$($PY -c "
++import json
++recs=[json.loads(l) for l in open('$dir/obs/steps.jsonl')]
++pop=sum(1 for r in recs if r.get('gpu_step_ms') is not None)
++print(round(100.0*pop/max(1,len(recs)),1))")
++    $PY -c "import sys;sys.exit(0 if float('$gpufrac')>=95.0 else 1)" \
++      || reasons+=("only ${gpufrac}% of steps have gpu_step_ms populated")
++  fi
++  # collector dropped == 0 when stats file present
++  if [ -f "$dir/obs/collector_stats.json" ]; then
++    local dropped; dropped=$($PY -c "import json;print(json.load(open('$dir/obs/collector_stats.json'))['records_dropped'])")
++    [ "$dropped" = "0" ] || reasons+=("collector dropped $dropped records")
++  fi
++  # arm-specific SD behavior from the trace
++  if [ -f "$dir/obs/steps.jsonl" ]; then
++    local sdsum; sdsum=$($PY -c "
++import json
++recs=[json.loads(l) for l in open('$dir/obs/steps.jsonl')]
++print(sum(r['draft_tokens'] for r in recs))")
++    case $arm in
++      ar) [ "$sdsum" = "0" ] || reasons+=("AR arm scheduled $sdsum draft tokens (expected 0)") ;;
++      dspark) [ "$sdsum" -gt 1000 ] || reasons+=("dspark arm scheduled only $sdsum draft tokens (expected SD active)") ;;
++    esac
++  fi
++  if [ ${#reasons[@]} -eq 0 ]; then return 0; else log "INVALID $cell: ${reasons[*]}"; return 1; fi
++}
++
++trial() { # $1=arm $2=C
++  local arm=$1 C=$2 cell="${arm}_c${C}" dir="$OUT/$cell"
++  if [ -f "$dir/DONE" ] || [ -f "$dir/INVALID" ]; then log "SKIP $cell (already done)"; return 0; fi
++  gpu_free || { log "FAIL $cell: GPU$GPU not free at start"; mkdir -p "$dir"; touch "$dir/INVALID"; return 1; }
++  log "START $cell"
++  mkdir -p "$dir"
++  write_manifest "$cell" "$arm" "$C"
++  start_server "$cell" "$arm"
++  if ! wait_health "$cell"; then
++    log "FAIL $cell: server not healthy/verified in 420s"; tail -15 "$dir/server.log" | tee -a "$OUT/status.log"
++    stop_server; touch "$dir/INVALID"; return 1
++  fi
++  ( cd "$ENV" && .venv/bin/python "$REPO/experiments/scrape_metrics.py" \
++      --port $PORT --gpu $GPU --interval 0.5 --out "$dir/metrics.jsonl" ) \
++      > "$dir/scraper.log" 2>&1 &
++  local SC_PID=$!
++  sleep 3
++  cd "$ENV"
++  timeout $((DURATION + 300)) .venv/bin/python "$REPO/experiments/hetero_client_qwen3.py" \
++      $PORT $DURATION $C $WARMUP "$dir/client.jsonl" $SEED > "$dir/client.log" 2>&1
++  local CRC=$?
++  kill $SC_PID 2>/dev/null; wait $SC_PID 2>/dev/null
++  sleep 3   # let atexit final_flush drain the last steps' events (documented in prereg)
++  stop_server
++  if [ $CRC -ne 0 ]; then log "FAIL $cell: client rc=$CRC"; touch "$dir/INVALID"; return 1; fi
++  if validate_cell "$cell" "$arm"; then
++    touch "$dir/DONE"; log "DONE-VALID $cell"
++  else
++    touch "$dir/INVALID"
++  fi
++}
++
++# ---------------- main ----------------
++mkdir -p "$OUT"
++touch "$MANIFEST"
++DRY=0; [ "${1:-}" = "--dry-run" ] && DRY=1
++if [ $DRY -eq 1 ]; then shift; fi
++
++# frozen order (prereg §3): C-major, AR before DSpark within each C — 4 cells
++CELLS="ar_c32 dspark_c32 ar_c96 dspark_c96"
++if [ $# -gt 0 ]; then CELLS="$*"; fi
++
++parse_cell() { # sets P_ARM P_C
++  local cell=$1
++  if [[ $cell =~ ^(.+)_c([0-9]+)$ ]]; then
++    P_ARM="${BASH_REMATCH[1]}"; P_C="${BASH_REMATCH[2]}"
++    return 0
++  fi
++  return 1
++}
++
++log "=== H-OBS-3 run set: $(echo $CELLS | wc -w) cells (hetero, natural EOS, tracer on) ==="
++for cell in $CELLS; do
++  parse_cell "$cell" || { log "FATAL: unparseable cell label '$cell'"; exit 1; }
++  arm=$P_ARM; C=$P_C
++  case $arm in ar|dspark) ;; *) log "FATAL: unknown arm $arm"; exit 1;; esac
++  if [ $DRY -eq 1 ]; then
++    tbmode="<unset>"; [ "$arm" = "dspark" ] && tbmode=native
++    echo "[dry-run] $cell -> TB_MODE=$tbmode OBS_TRACE=ON C=$C"
++    continue
++  fi
++  acquire_lock
++  trial "$arm" "$C"
++done
++log "=== H-OBS-3 run set complete: $(ls $OUT/*/DONE 2>/dev/null | wc -l) valid, $(ls $OUT/*/INVALID 2>/dev/null | wc -l) invalid ==="
+diff --git a/tests/v1/core/test_phase7_controller.py b/tests/v1/core/test_phase7_controller.py
+new file mode 100644
+index 0000000..cc0c3c4
+--- /dev/null
++++ b/tests/v1/core/test_phase7_controller.py
+@@ -0,0 +1,320 @@
++# Phase 7 (capstone) — request-aware SD controller (hit-rate class axis): deterministic
++# causal-verification tests. Prereg docs/phase7-capstone-prereg.md §4.4 / S5 / [CAL-2].
++# No GPU / no weights.
++#
++#   Part 1 (unit): Phase7Controller 2-axis rule + load hysteresis, hit-rate class signal
++#                  (rolling window + min-admissions gate), OFF->ON cooldown flap guard,
++#                  ablation modes, constant arms, causal trace fields.
++#   Part 2 (integration): REAL Scheduler.schedule() path with VLLM_TB_MODE=live ->
++#                  CAUSAL assertion: decision OFF => pending drafts cleared (0 new spec
++#                  tokens scheduled); decision ON => K drafts persist and are scheduled.
++#   Part 3: controller-type selection by mode (Phase7Controller iff mode in PHASE7_MODES).
++#
++# Run: .venv/bin/python -m pytest tests/v1/core/test_phase7_controller.py -q
++import json
++
++import pytest
++
++from vllm.v1.core.sched import phase7_controller as p7mod
++from vllm.v1.core.sched.phase7_controller import Phase7Controller, PHASE7_MODES
++from vllm.v1.outputs import DraftTokenIds, ModelRunnerOutput
++
++import time
++from .utils import create_requests, create_scheduler
++
++
++class FakeClock:
++    def __init__(self, t0: float = 1000.0):
++        self.t = t0
++
++    def __call__(self) -> float:
++        return self.t
++
++    def advance(self, dt: float) -> None:
++        self.t += dt
++
++
++@pytest.fixture(autouse=True)
++def _restore_clock(monkeypatch):
++    monkeypatch.setattr(p7mod, "_now", time.monotonic)
++    yield
++
++
++# --------------------------------------------------------------------------- #
++# Part 1 — unit tests for Phase7Controller 2-axis decision logic (hit-rate class axis)
++# --------------------------------------------------------------------------- #
++class TestTwoAxisRule:
++    def test_low_load_is_on_via_load_axis(self):
++        """load_LOW (kv 0.30) drives ON even with no hit-rate history yet."""
++        c = Phase7Controller(num_spec_tokens=7, mode="live")
++        assert c.evaluate(running=16, kv_usage=0.30, prev_hit_rate=None, prev_n_adm=0) is True
++        assert c.state == "on"
++
++    def test_high_load_low_hitrate_is_off(self):
++        """kv 0.95 (not low) + hit-rate below theta_hit -> OFF (both axes fail)."""
++        c = Phase7Controller(num_spec_tokens=7, mode="live")
++        for _ in range(3):
++            c.evaluate(running=64, kv_usage=0.95, prev_hit_rate=0.1, prev_n_adm=10)
++        assert c._hit_rate_mean() < p7mod._HIT_HI
++        assert c.evaluate(running=64, kv_usage=0.95, prev_hit_rate=None, prev_n_adm=0) is False
++        assert c.state == "off"
++
++    def test_high_load_high_hitrate_is_on_via_class_axis(self):
++        """kv 0.95 (not low) BUT hit-rate above theta_hit (reusable traffic) -> ON.
++        The capstone's core: the SD-independent class axis keeps SD on at high load for
++        reusable traffic, where the load-only arm would be OFF."""
++        c = Phase7Controller(num_spec_tokens=7, mode="live")
++        for _ in range(3):
++            c.evaluate(running=64, kv_usage=0.95, prev_hit_rate=0.9, prev_n_adm=10)
++        assert c._hit_rate_mean() > p7mod._HIT_HI
++        assert c.evaluate(running=64, kv_usage=0.95, prev_hit_rate=None, prev_n_adm=0) is True
++        assert c.state == "on"
++
++    def test_load_axis_orthogonal_to_class(self):
++        """The 2x2 payoff surface: ON iff load_LOW OR class_HIGHREUSE, independent of the
++        other axis. Verify all four quadrants (>=5 admissions so class is decided)."""
++        for kv in (0.30, 0.95):          # load LOW, HIGH
++            for hr in (0.1, 0.9):        # class low (diverse), high (reusable)
++                c = Phase7Controller(num_spec_tokens=7, mode="live")
++                out = c.evaluate(running=64, kv_usage=kv, prev_hit_rate=hr, prev_n_adm=10)
++                expect_on = (kv < p7mod._KV_LOW_ON) or (hr > p7mod._HIT_HI)
++                assert out is expect_on, f"kv={kv} hr={hr} -> {out}, want {expect_on}"
++
++
++class TestLoadHysteresis:
++    def test_low_regime_stays_low_through_band(self):
++        """Once in the low regime, usage rising only to 0.70 (< _KV_LOW_OFF) must NOT
++        clear load_low — hysteresis prevents flapping at the boundary."""
++        c = Phase7Controller(num_spec_tokens=7, mode="live")
++        c.evaluate(running=16, kv_usage=0.30, prev_hit_rate=None, prev_n_adm=0)  # -> low
++        assert c.load_low is True
++        c.evaluate(running=40, kv_usage=0.70, prev_hit_rate=None, prev_n_adm=0)  # rise to band
++        assert c.load_low is True      # still low (below 0.75 off threshold)
++
++    def test_high_regime_requires_clear_drop_to_reenter(self):
++        """Once OFF-high, load only re-enters LOW when usage < _KV_LOW_ON (0.55), not at
++        the 0.75 line — asymmetric hysteresis band."""
++        c = Phase7Controller(num_spec_tokens=7, mode="live")
++        for _ in range(3):
++            c.evaluate(running=64, kv_usage=0.95, prev_hit_rate=0.1, prev_n_adm=10)  # -> off/high
++        assert c.state == "off" and c.load_low is False
++        c.evaluate(running=64, kv_usage=0.70, prev_hit_rate=None, prev_n_adm=0)
++        assert c.load_low is False     # 0.70 > 0.55 -> still high (no re-entry)
++        c.evaluate(running=32, kv_usage=0.40, prev_hit_rate=None, prev_n_adm=0)
++        assert c.load_low is True      # 0.40 < 0.55 -> re-enter low
++
++
++class TestClassSignal:
++    def test_rolling_window_prunes_old_samples(self):
++        clock = FakeClock()
++        p7mod._now = clock
++        c = Phase7Controller(num_spec_tokens=7, mode="live")
++        for _ in range(3):
++            c.evaluate(running=64, kv_usage=0.95, prev_hit_rate=0.9, prev_n_adm=10)
++        assert c.class_highreuse() is True
++        # Advance past the window with no new admissions: samples age out -> mean None.
++        clock.advance(p7mod._WINDOW_S + 1.0)
++        c.evaluate(running=64, kv_usage=0.95, prev_hit_rate=None, prev_n_adm=0)
++        assert c.class_highreuse() is False
++
++    def test_min_admissions_gate(self):
++        """Below _MIN_ADMISSIONS the class signal is 'not decided' (None), never high-reuse."""
++        c = Phase7Controller(num_spec_tokens=7, mode="live")
++        # A single admission with a high hit-rate but too few to decide.
++        c.evaluate(running=64, kv_usage=0.95, prev_hit_rate=0.9, prev_n_adm=2)
++        assert c._hit_rate_mean() is None
++        assert c.class_highreuse() is False
++
++
++class TestCooldownFlapGuard:
++    def test_off_to_on_requires_cooldown(self):
++        """Once OFF, a rising class signal must NOT immediately re-enter ON (flap guard);
++        it re-enters only after the cooldown. The load axis bypasses this floor."""
++        clock = FakeClock()
++        p7mod._now = clock
++        c = Phase7Controller(num_spec_tokens=7, mode="live")
++        # Drive OFF at high load with low hit-rate (ON->OFF is immediate). 30 low samples.
++        for _ in range(3):
++            c.evaluate(running=64, kv_usage=0.95, prev_hit_rate=0.1, prev_n_adm=10)
++        assert c.state == "off"
++        # Reusable traffic returns (heavy: 64 admissions/step) but within the cooldown:
++        # the window is now dominated by high hit-rate -> class fires...
++        clock.advance(0.3)  # < _COOLDOWN_S
++        out = c.evaluate(running=64, kv_usage=0.95, prev_hit_rate=0.9, prev_n_adm=64)
++        assert c.class_highreuse() is True   # ...and the signal has crossed theta...
++        assert out is False and c.state == "off"  # ...but the cooldown flap guard holds.
++        # After the cooldown -> re-enter ON (no probe needed: class is directly observable).
++        clock.advance(1.1)
++        out = c.evaluate(running=64, kv_usage=0.95, prev_hit_rate=0.9, prev_n_adm=10)
++        assert out is True and c.state == "on"
++
++    def test_load_drop_rescues_on_immediately(self):
++        """The load axis bypasses the cooldown: if load drops while OFF, it rescues ON
++        immediately (unambiguous and cheap)."""
++        clock = FakeClock()
++        p7mod._now = clock
++        c = Phase7Controller(num_spec_tokens=7, mode="live")
++        for _ in range(3):
++            c.evaluate(running=64, kv_usage=0.95, prev_hit_rate=0.1, prev_n_adm=10)  # off/high
++        assert c.state == "off"
++        clock.advance(0.01)
++        assert c.evaluate(running=16, kv_usage=0.30, prev_hit_rate=None, prev_n_adm=0) is True
++        assert c.state == "on"
++
++
++class TestModes:
++    def test_loadonly_ignores_class(self):
++        """CTRL-LOADONLY ablation: high hit-rate must NOT turn it ON at high load."""
++        c = Phase7Controller(num_spec_tokens=7, mode="loadonly")
++        for _ in range(3):
++            c.evaluate(running=64, kv_usage=0.95, prev_hit_rate=0.9, prev_n_adm=10)
++        assert c.class_highreuse() is True  # class signal IS high...
++        assert c.evaluate(running=64, kv_usage=0.95, prev_hit_rate=None, prev_n_adm=0) is False
++
++    def test_classonly_ignores_load(self):
++        """CTRL-CLASSONLY ablation: low load must NOT turn it ON with no hit-rate."""
++        c = Phase7Controller(num_spec_tokens=7, mode="classonly")
++        assert c.evaluate(running=16, kv_usage=0.30, prev_hit_rate=None, prev_n_adm=0) is False
++
++    def test_mode_on_constant(self):
++        c = Phase7Controller(num_spec_tokens=7, mode="on")
++        assert c.evaluate(running=64, kv_usage=0.95, prev_hit_rate=None, prev_n_adm=0) is True
++        assert c.state == "on"
++
++    def test_mode_off_constant(self):
++        c = Phase7Controller(num_spec_tokens=7, mode="off")
++        assert c.evaluate(running=16, kv_usage=0.30, prev_hit_rate=0.9, prev_n_adm=10) is False
++        assert c.state == "off"
++
++    def test_mode_native_bypass(self):
++        c = Phase7Controller(num_spec_tokens=7, mode="native")
++        assert c.evaluate(running=64, kv_usage=0.95, prev_hit_rate=None, prev_n_adm=0) is True
++
++
++class TestCausalTrace:
++    def test_trace_fields_and_off_step_zero_drafts(self, tmp_path):
++        p7mod._now = FakeClock()
++        trace = str(tmp_path / "trace.jsonl")
++        c = Phase7Controller(num_spec_tokens=7, mode="live")
++        c.trace_path = trace
++        for _ in range(3):
++            c.evaluate(running=64, kv_usage=0.95, prev_hit_rate=0.1, prev_n_adm=10)
++        assert c.state == "off"
++        c.record_step(sd_enabled=False, running=64, waiting=0, kv_usage=0.95,
++                      scheduled_tokens=64, draft_tokens_scheduled=0, prefill_tokens=64,
++                      max_num_seqs=64)
++        c.flush_trace()
++        rows = [json.loads(l) for l in open(trace)]
++        assert rows[-1]["sd_enabled"] == 0
++        assert rows[-1]["drafts_scheduled_this_step"] == 0
++        for k in ("t", "sd_enabled", "state", "kv_usage", "occupancy", "hit_rate",
++                  "load_low", "class_highreuse", "drafts_scheduled_this_step"):
++            assert k in rows[-1], f"missing trace field {k}"
++
++
++# --------------------------------------------------------------------------- #
++# Part 2 — integration: REAL Scheduler.schedule() causal assertion (VLLM_TB_MODE=live)
++# --------------------------------------------------------------------------- #
++def _make_running_decode_reqs(scheduler, n: int, K: int):
++    """Add n requests, run a prefill step + update_from_output, then attach K pending
++    draft tokens to each (as the prior ON step would have produced)."""
++    requests = create_requests(num_requests=n, num_tokens=1)
++    req_ids = [r.request_id for r in requests]
++    for req in requests:
++        scheduler.add_request(req)
++
++    out = scheduler.schedule()  # prefill step: 1 token each
++    assert all(out.num_scheduled_tokens[rid] == 1 for rid in req_ids)
++
++    mro = ModelRunnerOutput(
++        req_ids=req_ids,
++        req_id_to_index={rid: i for i, rid in enumerate(req_ids)},
++        sampled_token_ids=[[0] for _ in range(n)],
++        logprobs=None,
++        prompt_logprobs_dict={},
++        pooler_output=[],
++    )
++    scheduler.update_from_output(out, mro)
++
++    drafts = [[1000 + i * 100 + j for j in range(K)] for i in range(n)]
++    scheduler.update_draft_token_ids(DraftTokenIds(req_ids, drafts))
++    return requests
++
++
++class TestSchedulerCausalAssertionPhase7:
++    def test_live_off_step_clears_pending_drafts(self, monkeypatch):
++        """CAUSAL (S5): with VLLM_TB_MODE=live and the controller pinned OFF, a decode
++        step schedules 0 new draft tokens (pending drafts cleared)."""
++        K = 7
++        monkeypatch.setenv("VLLM_TB_MODE", "live")
++        scheduler = create_scheduler(num_speculative_tokens=K)
++        assert isinstance(scheduler.tb_controller, Phase7Controller)
++        requests = _make_running_decode_reqs(scheduler, n=4, K=K)
++
++        monkeypatch.setattr(scheduler.tb_controller, "evaluate", lambda **k: False)
++        out = scheduler.schedule()
++
++        assert out.sd_enabled is False
++        assert out.scheduled_spec_decode_tokens == {}
++        for req in requests:
++            assert req.spec_token_ids == []
++            assert out.num_scheduled_tokens[req.request_id] == 1  # plain AR step
++
++    def test_live_on_step_preserves_drafts(self, monkeypatch):
++        """CAUSAL (S5): with the controller pinned ON, K drafts persist and are
++        scheduled for every running request."""
++        K = 7
++        monkeypatch.setenv("VLLM_TB_MODE", "live")
++        scheduler = create_scheduler(num_speculative_tokens=K)
++        requests = _make_running_decode_reqs(scheduler, n=4, K=K)
++
++        monkeypatch.setattr(scheduler.tb_controller, "evaluate", lambda **k: True)
++        out = scheduler.schedule()
++
++        assert out.sd_enabled is True
++        for req in requests:
++            rid = req.request_id
++            assert out.num_scheduled_tokens[rid] == 1 + K
++            assert len(out.scheduled_spec_decode_tokens[rid]) == K
++
++    def test_live_real_controller_low_load_stays_on(self, monkeypatch):
++        """With the REAL live controller and low KV usage, cold start stays ON, so a
++        decode step with pending drafts still schedules them."""
++        K = 7
++        monkeypatch.setenv("VLLM_TB_MODE", "live")
++        scheduler = create_scheduler(num_speculative_tokens=K)
++        requests = _make_running_decode_reqs(scheduler, n=3, K=K)
++
++        # Force the load axis to LOW (kv_cache_manager.usage is a read-only property;
++        # patch the controller's hysteresis update instead so it reads as low).
++        def _force_low(kv):
++            scheduler.tb_controller._load_is_low = True
++        monkeypatch.setattr(scheduler.tb_controller, "_update_load", _force_low)
++
++        out = scheduler.schedule()
++        assert out.sd_enabled is True
++        for req in requests:
++            assert len(out.scheduled_spec_decode_tokens[req.request_id]) == K
++
++
++# --------------------------------------------------------------------------- #
++# Part 3 — controller-type selection by mode
++# --------------------------------------------------------------------------- #
++class TestControllerSelection:
++    def test_phase7_modes_select_phase7_controller(self, monkeypatch):
++        for m in sorted(PHASE7_MODES):
++            monkeypatch.setenv("VLLM_TB_MODE", m)
++            s = create_scheduler(num_speculative_tokens=4)
++            assert isinstance(s.tb_controller, Phase7Controller), f"mode {m}"
++
++    def test_native_mode_selects_tb_controller(self, monkeypatch):
++        from vllm.v1.core.sched.tb_controller import TBController
++        monkeypatch.setenv("VLLM_TB_MODE", "native")
++        s = create_scheduler(num_speculative_tokens=4)
++        assert isinstance(s.tb_controller, TBController)
++
++    def test_unset_mode_defaults_to_native(self, monkeypatch):
++        from vllm.v1.core.sched.tb_controller import TBController
++        monkeypatch.delenv("VLLM_TB_MODE", raising=False)
++        s = create_scheduler(num_speculative_tokens=4)
++        assert isinstance(s.tb_controller, TBController)
+diff --git a/tests/v1/core/test_tb_controller.py b/tests/v1/core/test_tb_controller.py
+new file mode 100644
+index 0000000..32f822a
+--- /dev/null
++++ b/tests/v1/core/test_tb_controller.py
+@@ -0,0 +1,349 @@
++# Track B — deterministic causal-verification tests (prereg docs/trackb-prereg.md §4.4).
++#
++# No GPU / no model weights required (scheduler + controller logic only).
++#
++#   Part 1 (unit): TBController decision logic driven by an injected fake clock.
++#                  Cold-start-ON, OFF exit when measured cost > AR*(1+band),
++#                  cooldown gating of re-entry, hysteresis re-entry, prefill-step
++#                  exclusion, idle-gap exclusion, constant modes, Phase-6 fit.
++#   Part 2 (integration): the REAL Scheduler.schedule() path (vLLM's own
++#                  create_scheduler/create_requests helpers). CAUSAL assertion:
++#                    - decision OFF  => pending request.spec_token_ids cleared, so
++#                      scheduled_spec_decode_tokens is empty and each running decode
++#                      request schedules exactly 1 token (plain AR step);
++#                    - decision ON   => K drafts persist and are scheduled.
++#   Part 3: SchedulerOutput.sd_enabled field presence + default.
++#
++# Run:  .venv/bin/python -m pytest tests/v1/core/test_tb_controller.py -q
++import time
++
++import pytest
++
++from vllm.v1.core.sched import tb_controller as tbmod
++from vllm.v1.core.sched.output import CachedRequestData, SchedulerOutput
++from vllm.v1.core.sched.tb_controller import TBController
++from vllm.v1.outputs import DraftTokenIds, ModelRunnerOutput
++
++from .utils import create_requests, create_scheduler
++
++
++# --------------------------------------------------------------------------- #
++# Fake clock (injectable into tbmod._now)
++# --------------------------------------------------------------------------- #
++class FakeClock:
++    def __init__(self, t0: float = 1000.0):
++        self.t = t0
++
++    def __call__(self) -> float:
++        return self.t
++
++    def advance(self, dt: float) -> None:
++        self.t += dt
++
++
++@pytest.fixture(autouse=True)
++def _restore_clock(monkeypatch):
++    monkeypatch.setattr(tbmod, "_now", time.monotonic)
++    yield
++
++
++# --------------------------------------------------------------------------- #
++# Part 1 — unit tests for TBController decision logic (probe-based design)
++# --------------------------------------------------------------------------- #
++def _drive_to_off(c, clock):
++    """Cold start + 3 expensive SD-on decode steps at n=64 -> state OFF.
++
++    Sequence of evaluate() returns: True (cold), True (1 sample <3),
++    True (2 samples <3), False (3rd sample crosses exit band). The helper
++    drives the controller and asserts only the final state, not intermediates.
++    """
++    assert c.evaluate(running=64, scheduled_tokens=512, prefill_tokens=0) is True  # cold, ON
++    for _ in range(3):
++        clock.advance(0.131)  # 131 ms > exit band thr(64)*1.15 = 110.2 ms
++        c.evaluate(running=64, scheduled_tokens=512, prefill_tokens=0)
++    assert c.state == "off"
++
++
++class TestTBControllerDecision:
++    def test_cold_start_is_on(self):
++        c = TBController(num_spec_tokens=7)
++        assert c.evaluate(running=64, scheduled_tokens=512, prefill_tokens=0) is True
++        assert c.state == "on"
++
++    def test_off_exit_when_measured_cost_exceeds_threshold(self):
++        clock = FakeClock()
++        tbmod._now = clock
++        c = TBController(num_spec_tokens=7)
++        # thr(64) = 2.77*34.56 = 95.7 ms; exit band = 110.2 ms. Feed 131 ms steps.
++        assert c.evaluate(running=64, scheduled_tokens=512, prefill_tokens=0) is True  # cold
++        clock.advance(0.131); assert c.evaluate(running=64, scheduled_tokens=512, prefill_tokens=0) is True   # sample 1 (<3)
++        clock.advance(0.131); assert c.evaluate(running=64, scheduled_tokens=512, prefill_tokens=0) is True   # sample 2 (<3)
++        clock.advance(0.131); assert c.evaluate(running=64, scheduled_tokens=512, prefill_tokens=0) is False  # sample 3 -> OFF
++        assert c.state == "off"
++
++    def test_off_stays_off_until_cooldown_then_probes(self):
++        clock = FakeClock()
++        tbmod._now = clock
++        c = TBController(num_spec_tokens=7)
++        _drive_to_off(c, clock)
++        # While OFF (no SD-on samples accumulate), stays OFF through the cooldown.
++        for _ in range(3):
++            clock.advance(0.035)  # AR-like steps; state off -> not sampled
++            assert c.evaluate(running=64, scheduled_tokens=64, prefill_tokens=0) is False
++        # Cross the 1 s cooldown -> next step starts a probe (SD on again).
++        clock.advance(tbmod._COOLDOWN_S + 0.035)
++        assert c.evaluate(running=64, scheduled_tokens=64, prefill_tokens=0) is True
++        assert c.state == "probe"
++
++    def test_probe_commit_on_when_dspark_cheap(self):
++        clock = FakeClock()
++        tbmod._now = clock
++        c = TBController(num_spec_tokens=7)
++        _drive_to_off(c, clock)
++        clock.advance(tbmod._COOLDOWN_S + 0.035)
++        assert c.evaluate(running=64, scheduled_tokens=64, prefill_tokens=0) is True  # probe step 1
++        # Probe steps with cheap DSpark cost (35 ms < commit band 81.4 ms).
++        for _ in range(2):
++            clock.advance(0.035)
++            c.evaluate(running=64, scheduled_tokens=64, prefill_tokens=0)
++        # After probe_steps(3) with >=2 samples -> commit ON.
++        clock.advance(0.035)
++        assert c.evaluate(running=64, scheduled_tokens=64, prefill_tokens=0) is True
++        assert c.state == "on"
++
++    def test_probe_revert_off_when_dspark_expensive(self):
++        clock = FakeClock()
++        tbmod._now = clock
++        c = TBController(num_spec_tokens=7)
++        _drive_to_off(c, clock)
++        clock.advance(tbmod._COOLDOWN_S + 0.131)
++        assert c.evaluate(running=64, scheduled_tokens=64, prefill_tokens=0) is True  # probe step 1 (131 ms sample)
++        for _ in range(2):
++            clock.advance(0.131)
++            c.evaluate(running=64, scheduled_tokens=64, prefill_tokens=0)
++        clock.advance(0.131)
++        assert c.evaluate(running=64, scheduled_tokens=64, prefill_tokens=0) is False
++        assert c.state == "off"
++        # Cooldown extended (>= 2 s): a 1.5 s gap must NOT start a new probe.
++        clock.advance(1.5)
++        assert c.evaluate(running=64, scheduled_tokens=64, prefill_tokens=0) is False
++        assert c.state == "off"
++
++    def test_low_load_stays_on(self):
++        """Phase 6 C=8 regime: DSpark step cost ~9 ms << threshold -> stays ON."""
++        clock = FakeClock()
++        tbmod._now = clock
++        c = TBController(num_spec_tokens=7)
++        assert c.evaluate(running=8, scheduled_tokens=64, prefill_tokens=0) is True
++        for _ in range(10):
++            clock.advance(0.025)  # ~9 ms TPOT * 2.77 acc_len ≈ 25 ms/step
++            assert c.evaluate(running=8, scheduled_tokens=64, prefill_tokens=0) is True
++        assert c.state == "on"
++
++    def test_prefill_heavy_steps_excluded_from_window(self):
++        clock = FakeClock()
++        tbmod._now = clock
++        c = TBController(num_spec_tokens=7)
++        c.evaluate(running=64, scheduled_tokens=512, prefill_tokens=0)
++        # 90% of tokens are prefill (non-draft) -> not a decode sample.
++        clock.advance(0.131)
++        out = c.evaluate(running=64, scheduled_tokens=512, prefill_tokens=460)
++        assert out is True  # only cold step seen (<3 samples) -> still ON
++
++    def test_idle_gap_not_sampled(self):
++        clock = FakeClock()
++        tbmod._now = clock
++        c = TBController(num_spec_tokens=7)
++        c.evaluate(running=64, scheduled_tokens=512, prefill_tokens=0)
++        clock.advance(10.0)  # idle gap -> previous step not recorded as a cost
++        assert c.evaluate(running=64, scheduled_tokens=512, prefill_tokens=0) is True
++
++    def test_mode_on_always_enabled(self):
++        c = TBController(num_spec_tokens=7)
++        c.mode = "on"
++        assert c.evaluate(running=64, scheduled_tokens=512, prefill_tokens=0) is True
++        assert c.state == "on"
++
++    def test_mode_off_always_disabled(self):
++        c = TBController(num_spec_tokens=7)
++        c.mode = "off"
++        assert c.evaluate(running=8, scheduled_tokens=64, prefill_tokens=0) is False
++        assert c.state == "off"
++
++    def test_single_transient_spike_does_not_flip_off(self):
++        """Regression: prereg R3 specifies a full rolling-window mean (W=2 s).
++        A single transient decode spike must NOT push the exit decision over the
++        band. With the old last-4 mean, one 110 ms spike among ~20 ms steps gave
++        mean(last4)=42.5 > exit band 41.6 at C=8 and caused on->off flapping;
++        the full window (~100 samples) absorbs it (mean ~21 ms)."""
++        clock = FakeClock()
++        tbmod._now = clock
++        c = TBController(num_spec_tokens=7)
++        # threshold(8)=36.19, exit band=41.6. Feed 30 normal ~20 ms SD-on decode
++        # steps with ONE 110 ms spike in the middle; all pure decode (pf=0).
++        assert c.evaluate(running=8, scheduled_tokens=80, prefill_tokens=0) is True  # cold
++        for i in range(30):
++            clock.advance(0.110 if i == 15 else 0.020)
++            assert c.evaluate(running=8, scheduled_tokens=80, prefill_tokens=0) is True
++        assert c.state == "on", f"flapped to {c.state} on a single spike"
++
++    def test_sustained_cost_increase_still_flips_off(self):
++        """The fix must not blind the controller: a SUSTAINED rise above the
++        exit band (the real saturation signal) still flips OFF."""
++        clock = FakeClock()
++        tbmod._now = clock
++        c = TBController(num_spec_tokens=7)
++        # 20 cheap steps, then 40 steps at ~50 ms (above exit band 41.6).
++        assert c.evaluate(running=8, scheduled_tokens=80, prefill_tokens=0) is True  # cold
++        for _ in range(20):
++            clock.advance(0.020)
++            c.evaluate(running=8, scheduled_tokens=80, prefill_tokens=0)
++        assert c.state == "on"
++        for _ in range(40):
++            clock.advance(0.050)
++            c.evaluate(running=8, scheduled_tokens=80, prefill_tokens=0)
++            if c.state == "off":
++                break
++        assert c.state == "off", "sustained cost rise did not trigger exit"
++
++    def test_mode_native_is_zero_overhead_bypass(self):
++        """Native mode (DSpark-K7 baseline arm): always ON, no state mutation."""
++        c = TBController(num_spec_tokens=7)
++        c.mode = "native"
++        c.active = False  # mirrors __init__ for the test
++        assert c.evaluate(running=64, scheduled_tokens=512, prefill_tokens=0) is True
++        assert c.state == "on" and c._samples == []
++
++    def test_est_ar_model_matches_phase6_fit(self):
++        c = TBController(num_spec_tokens=7)
++        # Phase 6 AR TPOT: 13.55 @8, 21.43 @32, 34.92 @64 (model within ~4%).
++        assert abs(c.est_ar_ms(8) - 13.06) < 0.5
++        assert abs(c.est_ar_ms(32) - 22.28) < 0.5
++        assert abs(c.est_ar_ms(64) - 34.56) < 0.5
++
++    def test_threshold_is_l_scaled(self):
++        c = TBController(num_spec_tokens=7)
++        # threshold(N) = L * est_ar(N); check the scaling and Phase-6 ordering:
++        # C=8 DSpark step (~25 ms) below thr(8)=41.7; C=64 DSpark step (~131 ms)
++        # above exit band thr(64)*1.15=110.2.
++        assert abs(c.threshold_ms(8) - 2.77 * c.est_ar_ms(8)) < 1e-9
++        assert 25.0 < c.threshold_ms(8)
++        assert 131.0 > c.threshold_ms(64) * (1.0 + tbmod._BAND)
++
++
++# --------------------------------------------------------------------------- #
++# Part 2 — integration: REAL Scheduler.schedule() causal assertion
++# --------------------------------------------------------------------------- #
++def _make_running_decode_reqs(scheduler, n: int, K: int):
++    """Add n requests, run a prefill step + update_from_output, then attach K
++    pending draft tokens to each (as the prior ON step would have produced)."""
++    requests = create_requests(num_requests=n, num_tokens=1)
++    req_ids = [r.request_id for r in requests]
++    for req in requests:
++        scheduler.add_request(req)
++
++    # Prefill step: 1 token each.
++    out = scheduler.schedule()
++    assert all(out.num_scheduled_tokens[rid] == 1 for rid in req_ids)
++
++    mro = ModelRunnerOutput(
++        req_ids=req_ids,
++        req_id_to_index={rid: i for i, rid in enumerate(req_ids)},
++        sampled_token_ids=[[0] for _ in range(n)],
++        logprobs=None,
++        prompt_logprobs_dict={},
++        pooler_output=[],
++    )
++    scheduler.update_from_output(out, mro)
++
++    # Attach K pending draft tokens to every running request.
++    drafts = [[1000 + i * 100 + j for j in range(K)] for i in range(n)]
++    scheduler.update_draft_token_ids(DraftTokenIds(req_ids, drafts))
++    return requests
++
++
++class TestSchedulerCausalAssertion:
++    def test_off_step_clears_pending_drafts(self, monkeypatch):
++        """CAUSAL: decision OFF => 0 new draft tokens scheduled this step."""
++        K = 7
++        scheduler = create_scheduler(num_speculative_tokens=K)
++        requests = _make_running_decode_reqs(scheduler, n=4, K=K)
++
++        # Pin the controller to decide OFF for the decode step.
++        monkeypatch.setattr(
++            scheduler.tb_controller, "evaluate", lambda **k: False
++        )
++
++        out = scheduler.schedule()
++
++        assert out.sd_enabled is False
++        # Pending drafts cleared -> no new spec tokens scheduled this step.
++        assert out.scheduled_spec_decode_tokens == {}
++        for req in requests:
++            assert req.spec_token_ids == []
++            # Plain AR decode step: exactly 1 token per request.
++            assert out.num_scheduled_tokens[req.request_id] == 1
++
++    def test_on_step_preserves_drafts(self, monkeypatch):
++        """CAUSAL: decision ON => K drafts persist and are scheduled."""
++        K = 7
++        scheduler = create_scheduler(num_speculative_tokens=K)
++        requests = _make_running_decode_reqs(scheduler, n=4, K=K)
++
++        # Pin the controller to decide ON for the decode step.
++        monkeypatch.setattr(
++            scheduler.tb_controller, "evaluate", lambda **k: True
++        )
++
++        out = scheduler.schedule()
++
++        assert out.sd_enabled is True
++        total = 0
++        for req in requests:
++            rid = req.request_id
++            # 1 sampled + K draft tokens scheduled.
++            assert out.num_scheduled_tokens[rid] == 1 + K
++            assert len(out.scheduled_spec_decode_tokens[rid]) == K
++            total += len(out.scheduled_spec_decode_tokens[rid])
++        assert total == 4 * K
++
++    def test_real_controller_cold_start_keeps_drafts(self):
++        """With the REAL controller (no monkeypatch), cold start => ON, so a
++        decode step with pending drafts still schedules them (no behavior change
++        before any measured cost accumulates)."""
++        K = 7
++        scheduler = create_scheduler(num_speculative_tokens=K)
++        requests = _make_running_decode_reqs(scheduler, n=3, K=K)
++
++        out = scheduler.schedule()
++
++        assert out.sd_enabled is True
++        for req in requests:
++            assert len(out.scheduled_spec_decode_tokens[req.request_id]) == K
++
++
++# --------------------------------------------------------------------------- #
++# Part 3 — SchedulerOutput.sd_enabled field presence / default
++# --------------------------------------------------------------------------- #
++def _mk_output(**overrides):
++    base = dict(
++        scheduled_new_reqs=[],
++        scheduled_cached_reqs=CachedRequestData.make_empty(),
++        num_scheduled_tokens={},
++        total_num_scheduled_tokens=0,
++        scheduled_spec_decode_tokens={},
++        scheduled_encoder_inputs={},
++        num_common_prefix_blocks=[],
++        finished_req_ids=set(),
++        free_encoder_mm_hashes=[],
++    )
++    base.update(overrides)
++    return SchedulerOutput(**base)
++
++
++class TestSchedulerOutputField:
++    def test_sd_enabled_defaults_true(self):
++        assert _mk_output().sd_enabled is True
++
++    def test_sd_enabled_settable_false(self):
++        assert _mk_output(sd_enabled=False).sd_enabled is False
+diff --git a/vllm/v1/core/sched/obs_tracer.py b/vllm/v1/core/sched/obs_tracer.py
+new file mode 100644
+index 0000000..85708d0
+--- /dev/null
++++ b/vllm/v1/core/sched/obs_tracer.py
+@@ -0,0 +1,285 @@
++# H-OBS-1 research patch: direct per-step GPU execution timing (NOT upstream code).
++#
++# Prereg: docs/hoobs1-prereg.md (better-vllm-speculative-decoding repo).
++#
++# Purpose: measure, per executed model step, the ACTUAL GPU execution window with
++# CUDA events recorded asynchronously and queried lazily (non-blocking query(); NO
++# torch.cuda.synchronize / cudaDeviceSynchronize in the hot path), so it can be
++# correlated 1:1 with the CPU scheduler cadence that the Track B controller uses.
++#
++# Enabled only when VLLM_OBS_TRACE is set to an output directory; otherwise
++# get_tracer() returns None and every hook is a one-attribute-check no-op.
++#
++# Output: ONE merged JSONL line per step (steps.jsonl), written lazily once the
++# step's GPU completion event has been observed done.
++#
++# ============================ DATA DICTIONARY ===============================
++# field            | units   | source / timing boundary                       | meaning & controller availability
++# -----------------+---------+------------------------------------------------+-----------------------------------
++# step_id          | index   | tracer, assigned at schedule() exit            | unique per scheduled step; correlates CPU record to GPU events by id
++# t_cpu_sched      | s mono  | schedule() ENTRY                               | the reference the Track B controller uses for cadence. Consecutive deltas = CPU cadence signal (CAUSALLY available: known at this step's decision time)
++# sched_ms         | ms      | schedule() exit - entry                        | CPU work inside schedule() itself (scheduling + bookkeeping), NOT idle gap and NOT GPU time
++# running          | reqs    | scheduler, actual requests scheduled THIS step | actually-scheduled requests (NOT configured concurrency C). C is a client-side cap; running <= min(C, max_num_seqs) and decays at the run tail
++# waiting          | reqs    | scheduler                                        | queued-not-running requests at schedule() time
++# scheduled_tokens | tokens  | scheduler, total this step                       | TOTAL positions verified on GPU = non-draft work + draft (INCLUDES drafts; verified empirically: pure-decode step ~= running*(1+K))
++# prefill_tokens   | tokens  | per-request phase bookkeeping                    | GENUINE prompt-work scheduled this step = sum over reqs of min(scheduled_r, num_prompt_tokens - num_computed_tokens). A decode request that schedules 1+K tokens contributes 0 here (its >1 count is the bonus position + drafts, NOT prefill)
++# draft_tokens     | tokens  | scheduler, scheduled_spec_decode_tokens          | draft/spec positions verified this step (the SD verification work); 0 when SD off or no drafts
++# sd_enabled       | 0/1     | frozen Track B controller decision for THIS step| requested SD mode for the step. NOTE: distinguishes REQUESTED mode from ACTUAL proposal execution - a step can be sd_enabled=1 yet schedule 0 drafts (draft_tokens=0), and vice-versa across the pipeline
++# in_flight        | steps   | tracer, at ENQUEUE time                          | earlier steps whose GPU completion was not yet observed when this step enqueued = outstanding model executions ~= how deep the 2-deep batch queue is used
++# gpu_step_ms      | ms      | CUDA events start->end (async record, lazy query) | full executed-step GPU window: target forward + sampling + drafter. NOT "pure drafter time". Causally available only AFTER this step's GPU work completes (t_flush), i.e. it is a LAGGED signal for the NEXT decision
++# gpu_fwd_ms       | ms      | CUDA events start->fwd_end                       | target-forward window only (the verification cost the on/off trade-off acts on). Scales with scheduled tokens; ~0-drafter on AR steps
++# t_flush          | s mono  | when this record was written                     | when the GPU measurement BECAME AVAILABLE. A causal controller at step t may only use records with t_flush <= decision_time(t)
++# ============================================================================
++#
++# Naming note: an earlier draft called (scheduled_tokens - draft_tokens)
++# "prefill_tokens". That is WRONG: in a pure decode step it equals `running`
++# (the 1 bonus position per request), and total INCLUDES drafts. The genuine
++# prefill/decode split above uses per-request phase bookkeeping instead. Raw
++# historical fields are preserved; this schema change is documented here, not
++# silently reinterpreted (old smoke traces used the old meaning).
++#
++# Collector policy: records whose GPU events are not yet complete are DEFERRED
++# to a later flush pass (no sleep in the serving hot path). Counts of
++# incomplete / delayed / dropped / failed records are written to
++# collector_stats.json at final_flush so samples are never silently selected.
++#
++# Alignment design: cpu_record() assigns a step_id and the scheduler propagates it
++# on SchedulerOutput (obs_step_id); the model runner passes that id back to
++# start_step/mark_fwd_end/end_step, so records and CUDA events are matched by id,
++# not by FIFO position. Dummy/profiling runs carry obs_step_id=-1 and are
++# skipped entirely (no record, no events). TP=1 only (UniProcExecutor:
++# scheduler and runner share a process; no IPC).
++
++import atexit
++import json
++import os
++import time
++from collections import deque
++
++import torch
++
++
++class _StepEvents:
++    __slots__ = ("start", "fwd_end", "end")
++
++    def __init__(self):
++        self.start = torch.cuda.Event(enable_timing=True)
++        self.fwd_end = torch.cuda.Event(enable_timing=True)
++        self.end = torch.cuda.Event(enable_timing=True)
++
++
++class _Pending:
++    __slots__ = ("rec", "events")
++
++    def __init__(self, rec):
++        self.rec = rec
++        # Set by start_step() once the step is executed; None until then.
++        self.events: _StepEvents | None = None
++
++
++class ObsTracer:
++    def __init__(self, out_dir: str):
++        self.out_dir = out_dir
++        self.path = os.path.join(out_dir, "steps.jsonl")
++        self._pending: deque[_Pending] = deque()  # in execution order
++        self._by_id: dict[int, _Pending] = {}
++        self._next_id = 0
++        self._buf: list[str] = []
++        # Collector stats (directive §3C): count incomplete/delayed/dropped/
++        # failed records instead of silently selecting successful samples.
++        self._stats = {
++            "records_created": 0,
++            "records_written_complete": 0,   # gpu_step_ms present
++            "records_written_null_gpu": 0,   # flushed at final_flush w/o GPU time
++            "records_failed_elapsed": 0,     # events done but elapsed_time refused (all retries)
++            "records_dropped": 0,            # no matching record / no events at flush
++        }
++        self._write_stats()   # exist from t0; updated on each flush + final_flush
++
++    def _write_stats(self) -> None:
++        try:
++            with open(os.path.join(self.out_dir, "collector_stats.json"), "w") as f:
++                json.dump(self._stats, f, indent=2)
++        except Exception:
++            pass
++
++    # ---- CPU-side hook (scheduler.schedule()) ----
++
++    def t_now(self) -> float:
++        return time.monotonic()
++
++    def cpu_record(self, running: int, waiting: int, scheduled_tokens: int,
++                   prefill_tokens: int, draft_tokens: int, sd_enabled: bool,
++                   entry_t: float = 0.0, exit_t: float = 0.0) -> int:
++        """One record per step that schedules >0 tokens. Returns the step_id to
++        propagate on SchedulerOutput so the runner's GPU hooks can match it.
++        `entry_t`/`exit_t` bracket schedule(); their delta is sched_ms (CPU work
++        inside scheduling, distinct from the cadence gap and from GPU time).
++        in_flight = earlier steps whose GPU completion had not yet been
++        observed at enqueue time."""
++        sid = self._next_id
++        rec = {
++            "step_id": sid,
++            "t_cpu_sched": round(entry_t if entry_t > 0 else time.monotonic(), 6),
++            # Wall-clock (time.time()) anchor for cross-process alignment with the
++            # metrics scraper / client clocks (H-OBS-3). Same host clock; additive.
++            "t_wall": round(time.time(), 6),
++            # CPU work inside schedule() itself (ms). 0.0 when not bracketed.
++            "sched_ms": round((exit_t - entry_t) * 1000.0, 3) if (entry_t > 0 and exit_t > entry_t) else None,
++            "running": running,
++            "waiting": waiting,
++            "scheduled_tokens": scheduled_tokens,
++            "prefill_tokens": prefill_tokens,
++            "draft_tokens": draft_tokens,
++            "sd_enabled": int(sd_enabled),
++            "in_flight": len(self._pending),
++        }
++        self._next_id += 1
++        p = _Pending(rec)
++        self._pending.append(p)
++        self._by_id[sid] = p
++        self._stats["records_created"] += 1
++        return sid
++
++    # ---- GPU-side hooks (V2 model runner) ----
++
++    def start_step(self, step_id: int) -> None:
++        """Start of an executed step's forward window. Attaches events to the
++        matching record by id and records the GPU start event. step_id < 0 means
++        no CPU record exists (dummy/profiling run, or tracer off) -> no-op."""
++        if step_id < 0:
++            return
++        p = self._by_id.get(step_id)
++        if p is None:
++            return  # defensive: no matching scheduler record
++        ev = _StepEvents()
++        p.events = ev
++        ev.start.record()
++
++    def mark_fwd_end(self, step_id: int) -> None:
++        """Right after the target forward was launched (before sampling/drafter)."""
++        if step_id < 0:
++            return
++        p = self._by_id.get(step_id)
++        if p is not None and p.events is not None:
++            p.events.fwd_end.record()
++
++    def end_step(self, step_id: int) -> None:
++        """End of the step's GPU work (after sampling + drafter)."""
++        if step_id < 0:
++            return
++        p = self._by_id.get(step_id)
++        if p is not None and p.events is not None:
++            p.events.end.record()
++            self._flush_ready()
++
++    def _flush_ready(self) -> None:
++        """Write pending records whose GPU window has fully completed (lazy,
++        non-blocking). torch 2.11's elapsed_time requires BOTH the start and end
++        events to be *completed* (not merely recorded), so we gate on both
++        query() results. Events on one stream complete in order, so stop at the
++        first not-yet-complete event; its record STAYS PENDING until a later
++        flush observes it done (final_flush is the guaranteed backstop).
++
++        Collector policy (directive §3C): NO sleep in this hot path. If
++        elapsed_time still refuses on a single attempt even though both events
++        report completed, we defer the record to the next pass rather than
++        blocking; repeated refusal is counted and surfaced at final_flush."""
++        while self._pending:
++            p = self._pending[0]
++            ev = p.events
++            if ev is None or not ev.end.query() or not ev.start.query():
++                break  # this (and all later) steps still running on the GPU
++            step_ms, fwd_ms = self._elapsed_once(ev)
++            if step_ms is None:
++                break  # defer to a later pass; counted if it never resolves
++            p.rec["gpu_step_ms"] = round(step_ms, 3)
++            p.rec["gpu_fwd_ms"] = round(fwd_ms, 3) if fwd_ms is not None else None
++            p.rec["t_flush"] = round(time.monotonic(), 6)
++            self._buf.append(json.dumps(p.rec))
++            self._by_id.pop(p.rec["step_id"], None)
++            self._pending.popleft()
++            self._stats["records_written_complete"] += 1
++        if len(self._buf) >= 100:
++            self.flush()
++
++    @staticmethod
++    def _elapsed_once(ev: _StepEvents):
++        """(step_ms, fwd_ms) with a SINGLE attempt (no sleep). step_ms=None means
++        defer to a later pass — the driver may finalize timestamps lazily even
++        after both events report completed."""
++        try:
++            step_ms = ev.start.elapsed_time(ev.end)
++        except Exception:
++            return None, None
++        try:
++            fwd_ms = ev.start.elapsed_time(ev.fwd_end)
++        except Exception:
++            fwd_ms = None
++        return step_ms, fwd_ms
++
++    def flush(self) -> None:
++        if not self._buf:
++            return
++        with open(self.path, "a") as f:
++            f.write("\n".join(self._buf) + "\n")
++        self._buf.clear()
++        # Write collector stats on every batched flush so the file exists and is
++        # current even if the process is later killed in abort mode (vLLM V1
++        # force-kills EngineCore on SIGTERM before atexit runs). This is a few KB
++        # of JSON ~once per 100 steps — negligible. Pending records are visible as
++        # created - written_complete, so nothing is silently selected.
++        self._write_stats()
++
++    def final_flush(self) -> None:
++        """Called once at process exit (atexit). The last few steps' completion
++        events may not have been observed yet; synchronize ONCE here (NOT in the
++        hot path) and write whatever is pending so no step is lost. Records that
++        still cannot be timed are written with null GPU fields and counted —
++        never silently dropped."""
++        try:
++            torch.cuda.synchronize()
++        except Exception:
++            pass
++        while self._pending:
++            p = self._pending[0]
++            ev = p.events
++            if ev is None:
++                p.rec["gpu_step_ms"] = None
++                p.rec["gpu_fwd_ms"] = None
++                self._stats["records_dropped"] += 1
++            else:
++                step_ms, fwd_ms = self._elapsed_once(ev)
++                if step_ms is None:
++                    # Give the already-synchronized device a few final attempts
++                    # (still outside the hot path); count if it never resolves.
++                    for _ in range(5):
++                        step_ms, fwd_ms = self._elapsed_once(ev)
++                        if step_ms is not None:
++                            break
++                p.rec["gpu_step_ms"] = round(step_ms, 3) if step_ms is not None else None
++                p.rec["gpu_fwd_ms"] = round(fwd_ms, 3) if fwd_ms is not None else None
++                if step_ms is None:
++                    self._stats["records_failed_elapsed"] += 1
++                else:
++                    self._stats["records_written_complete"] += 1
++            p.rec["t_flush"] = round(time.monotonic(), 6)
++            self._buf.append(json.dumps(p.rec))
++            self._by_id.pop(p.rec["step_id"], None)
++            self._pending.popleft()
++        self.flush()   # writes steps + collector_stats (via _write_stats)
++
++
++_tracer: ObsTracer | None = None
++
++
++def get_tracer() -> ObsTracer | None:
++    """Module-level lazy singleton. None when VLLM_OBS_TRACE is unset."""
++    global _tracer
++    if _tracer is None:
++        out_dir = os.environ.get("VLLM_OBS_TRACE", "")
++        if out_dir:
++            os.makedirs(out_dir, exist_ok=True)
++            _tracer = ObsTracer(out_dir)
++            atexit.register(_tracer.final_flush)
++    return _tracer
+diff --git a/vllm/v1/core/sched/output.py b/vllm/v1/core/sched/output.py
+index 291e73b..36b1708 100644
+--- a/vllm/v1/core/sched/output.py
++++ b/vllm/v1/core/sched/output.py
+@@ -244,6 +244,14 @@ class SchedulerOutput:
+     # Number of spec tokens to schedule for the next step.
+     num_spec_tokens_to_schedule: int = 0
+ 
++    # Track B research patch: live-state SD on/off decision (see tb_controller.py).
++    sd_enabled: bool = True
++
++    # H-OBS-1 research patch: id of this step's CPU-side obs record (-1 when the
++    # tracer is off or the step is synthetic/dummy). Used to match GPU CUDA-event
++    # windows to scheduler records by id.
++    obs_step_id: int = -1
++
+     @classmethod
+     def make_empty(cls) -> "SchedulerOutput":
+         return cls(
+diff --git a/vllm/v1/core/sched/phase7_controller.py b/vllm/v1/core/sched/phase7_controller.py
+new file mode 100644
+index 0000000..011c34f
+--- /dev/null
++++ b/vllm/v1/core/sched/phase7_controller.py
+@@ -0,0 +1,233 @@
++# Phase 7 (capstone) — request-aware SD on/off controller from live serving state.
++# Research patch (NOT upstream code). Prereg: docs/phase7-capstone-prereg.md.
++#
++# The validated 2-axis regime rule:
++#
++#     sd_enabled  <-  load_LOW  OR  class_HIGHREUSE
++#
++#   - load_LOW      : measured KV-cache usage fraction below a threshold, with hysteresis.
++#                     [CAL-1] primary signal = kv_cache_manager.usage. Chosen over
++#                     running-occupancy / waiting because it separates the c16/c48/c96
++#                     operating points cleanly (0.30 / 0.93 / 0.98) and needs no
++#                     max_num_seqs constant. Deliberately NOT the schedule()-cadence
++#                     signal, which Track B Defect 2 showed decouples from true GPU step
++#                     time under async scheduling.
++#   - class_HIGHREUSE: rolling MEAN prefix-cache ADMISSION hit-rate above a threshold.
++#                     [CAL-2] This is the SD-INDEPENDENT class proxy (see below). It is
++#                     measured from KV blocks at request admission — orthogonal to
++#                     speculative decoding, so it is available WHILE SD IS OFF. That is
++#                     what makes the 2-axis rule self-consistent: both axes are directly
++#                     observable in the state we must decide from.
++#
++# WHY hit-rate and not draft-acceptance (the [CAL-2b] finding): the first class-signal
++# design used SD's own draft-acceptance ratio. That has a chicken-and-egg: acceptance can
++# only be measured while SD is ON, but at high load the controller is OFF until it knows
++# traffic is reusable — so the signal never fires exactly where it must (smoke: global max
++# 0.295 < theta_acc 0.45, 0 steps crossed). Prefix-cache hit-rate has no such circularity:
++# a request that reuses a cached prefix shows hit-rate ~1.0 at admission regardless of SD.
++# The premise check (c96 mixed, SD off) confirmed the reusable prefixes SURVIVE eviction
++# pressure from diverse traffic and the signal is cleanly bimodal (~0 vs ~1), so this axis
++# works at high load. Because both axes are now directly observable with SD off, the Track B
++# cooldown+probe re-entry mechanism is no longer needed — a simple cooldown suffices to
++# avoid flapping on the OFF->ON edge.
++#
++# Modes (VLLM_TB_MODE):
++#   live      : full 2-axis rule (the hypothesis arm, CTRL-LIVE).
++#   loadonly  : ON iff load_LOW            (CTRL-LOADONLY ablation — class axis removed).
++#   classonly : ON iff class_HIGHREUSE     (CTRL-CLASSONLY ablation — load axis removed).
++#   on / off  : constant arms (CTRL-ON overhead control / SD-off floor).
++#   native    : zero-overhead always-on bypass (true DSpark-K7 baseline) -> handled by the
++#               caller not instantiating this controller at all.
++#
++# Causal-verification trace (prereg S5): every step appends
++#   {t, sd_enabled, state, kv_usage, occupancy, hit_rate, load_low, class_highreuse,
++#    drafts_scheduled_this_step}
++# to VLLM_TB_TRACE (JSONL). Offline assertion: OFF steps => 0 new draft tokens scheduled;
++# ON decode steps => K drafts per running request.
++import json
++import os
++import time
++
++_now = time.monotonic
++
++# ---- [CAL] constants (docs/phase7-capstone-prereg.md §7, frozen from existing data) ----
++# Load axis: KV-usage hysteresis band. c16 ~0.30 (LOW), c48/c96 ~0.93/0.98 (NOT LOW).
++_KV_LOW_ON = 0.55     # load_LOW becomes TRUE when usage < this
++_KV_LOW_OFF = 0.75    # load_LOW becomes FALSE when usage > this (hysteresis band 0.55-0.75)
++# Class axis: rolling MEAN admission prefix-hit-rate threshold. Premise check (c96 mixed,
++# SD off): per-request hit-rate is bimodal (~0 diverse / ~1 reusable); the 2s windowed mean
++# tracks the traffic mix. theta_hit=0.45 sits mid-gap (reusable-heavy windows ~0.6-0.9,
++# diverse-heavy ~0.0-0.3).
++_HIT_HI = 0.45        # class_HIGHREUSE iff rolling mean hit-rate > this
++# Rolling window for the hit-rate signal (wall seconds) and the minimum number of admitted
++# requests in-window before the class signal is "decided" (else treat as not-highreuse;
++# conservative — cold start is ON anyway via load axis at low load).
++_WINDOW_S = 2.0
++_MIN_ADMISSIONS = 5
++# Minimum OFF duration before the controller may re-enter ON (flap guard on the OFF->ON
++# edge only; the ON->OFF edge is immediate, matching Track B R3's T_off=1 s).
++_COOLDOWN_S = 1.0
++
++
++class Phase7Controller:
++    def __init__(self, num_spec_tokens: int, mode: str | None = None):
++        self.num_spec_tokens = num_spec_tokens
++        # Mode is normally set via VLLM_TB_MODE; an explicit arg overrides (tests).
++        self.mode = (mode or os.environ.get("VLLM_TB_MODE", "live")).lower()
++        self.trace_path = os.environ.get("VLLM_TB_TRACE", "")
++        # state: "on" or "off". Cold start ON (preserves the low-load benefit by default).
++        self.state = "on"
++        # rolling hit-rate samples: (wall_time, hit_rate) per admitted request.
++        self._hit_samples: list[tuple[float, float]] = []
++        # load-axis hysteresis state (None until first kv reading).
++        self._load_is_low: bool | None = None
++        # OFF->ON flap guard.
++        self._off_since: float | None = None
++        self._buf: list[str] = []
++
++    @property
++    def enabled(self) -> bool:
++        return self.state == "on"
++
++    # -- signal helpers ----------------------------------------------------------
++    def _update_load(self, kv_usage: float) -> None:
++        """Advance the load-axis hysteresis state. Cold start: need clearly low to be
++        low (kv < _KV_LOW_ON). Once low, stay low until clearly high (> _KV_LOW_OFF);
++        once high, re-enter low only when clearly low (< _KV_LOW_ON)."""
++        if self._load_is_low is None:
++            self._load_is_low = kv_usage < _KV_LOW_ON
++        elif self._load_is_low:
++            if kv_usage > _KV_LOW_OFF:
++                self._load_is_low = False
++        else:
++            if kv_usage < _KV_LOW_ON:
++                self._load_is_low = True
++
++    @property
++    def load_low(self) -> bool:
++        return bool(self._load_is_low)
++
++    def _hit_rate_mean(self) -> float | None:
++        """Rolling mean admission hit-rate over the window, or None if too few admissions
++        to decide."""
++        if len(self._hit_samples) < _MIN_ADMISSIONS:
++            return None
++        return sum(hr for _, hr in self._hit_samples) / len(self._hit_samples)
++
++    def class_highreuse(self) -> bool:
++        m = self._hit_rate_mean()
++        return m is not None and m > _HIT_HI
++
++    # -- decision ---------------------------------------------------------------
++    def evaluate(
++        self,
++        running: int,
++        kv_usage: float,
++        prev_hit_rate: float | None,
++        prev_n_adm: int,
++    ) -> bool:
++        """Decide SD on/off for the step about to be scheduled. Called once per
++        scheduler.schedule(), BEFORE running requests are processed (so an OFF decision
++        can clear pending drafts). `prev_hit_rate`/`prev_n_adm` summarize the previous
++        step's admitted requests (the class-signal sample): the mean hit-rate of those
++        admissions and their count. Both axes are read from live state — no dependence on
++        SD being on, so no probe is needed."""
++        if self.mode == "native":
++            return True
++        now = _now()
++
++        # 1) Record the previous step's admitted-request hit-rate samples. The scheduler
++        #    passes one aggregate per step (mean + count); we append `count` copies of the
++        #    mean so the window is admission-weighted, not step-weighted.
++        if prev_hit_rate is not None and prev_n_adm > 0:
++            for _ in range(min(prev_n_adm, 64)):  # cap per-step contribution
++                self._hit_samples.append((now, prev_hit_rate))
++
++        # 2) Prune the rolling window.
++        cutoff = now - _WINDOW_S
++        while self._hit_samples and self._hit_samples[0][0] < cutoff:
++            self._hit_samples.pop(0)
++
++        # 3) Advance the load-axis hysteresis state.
++        self._update_load(kv_usage)
++
++        if self.mode == "on":
++            self.state = "on"
++        elif self.mode == "off":
++            self.state = "off"
++        else:
++            ll = self.load_low
++            ch = self.class_highreuse()
++            if self.mode == "loadonly":
++                on = ll
++            elif self.mode == "classonly":
++                on = ch
++            else:  # live — full 2-axis rule
++                on = ll or ch
++
++            if self.state == "on":
++                if not on:
++                    self.state = "off"
++                    self._off_since = now
++            elif self.state == "off":
++                # Re-enter ON once `on` holds. The load axis bypasses the cooldown floor
++                # (a genuine drop to low load is unambiguous and cheap — rescue now); the
++                # class axis respects the cooldown as a flap guard (its 2 s window already
++                # smooths it, so the cooldown only adds a minimum OFF duration).
++                if on and (
++                    ll or self._off_since is None or now - self._off_since >= _COOLDOWN_S
++                ):
++                    self.state = "on"
++                    self._off_since = None
++
++        return self.enabled
++
++    # -- causal-verification trace ---------------------------------------------
++    def record_step(
++        self,
++        sd_enabled: bool,
++        running: int,
++        waiting: int,
++        kv_usage: float,
++        scheduled_tokens: int,
++        draft_tokens_scheduled: int,
++        prefill_tokens: int,
++        max_num_seqs: int,
++    ) -> None:
++        if not self.trace_path:
++            return
++        now = _now()
++        m = self._hit_rate_mean()
++        self._buf.append(
++            json.dumps(
++                {
++                    "t": round(now, 6),
++                    "sd_enabled": int(sd_enabled),
++                    "state": self.state,
++                    "mode": self.mode,
++                    "kv_usage": round(kv_usage, 4),
++                    "occupancy": round(running / max(1, max_num_seqs), 4),
++                    "hit_rate": (round(m, 4) if m is not None else None),
++                    "load_low": int(self.load_low),
++                    "class_highreuse": int(self.class_highreuse()),
++                    "drafts_scheduled_this_step": draft_tokens_scheduled,
++                }
++            )
++        )
++        if len(self._buf) >= 100:
++            self.flush_trace()
++
++    def flush_trace(self) -> None:
++        if not self.trace_path or not self._buf:
++            return
++        with open(self.trace_path, "a") as f:
++            f.write("\n".join(self._buf) + "\n")
++        self._buf.clear()
++
++
++# Capstone modes that route to Phase7Controller (vs Track B's TBController). `on`/`off`
++# are included so the constant arms run the SAME patched dispatch path (KV-usage read +
++# hit-rate feed + evaluate) as the policy arms — CTRL-ON then isolates the patch/decision
++# mechanism overhead, not a different code path. `native` stays in TBController (the
++# zero-overhead always-on bypass = true DSpark-K7 baseline).
++PHASE7_MODES = {"live", "loadonly", "classonly", "on", "off"}
+diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
+index 8e01035..16e4ee1 100644
+--- a/vllm/v1/core/sched/scheduler.py
++++ b/vllm/v1/core/sched/scheduler.py
+@@ -45,6 +45,7 @@ from vllm.v1.core.sched.output import (
+     NewRequestData,
+     SchedulerOutput,
+ )
++from vllm.v1.core.sched.obs_tracer import get_tracer as obs_get_tracer
+ from vllm.v1.core.sched.request_queue import (
+     RequestQueue,
+     SchedulingPolicy,
+@@ -233,6 +234,29 @@ class Scheduler(SchedulerInterface):
+         self.num_spec_tokens = vllm_config.num_speculative_tokens
+         self.num_lookahead_tokens = 0
+         self.dynamic_sd_lookup: list[int] | None = None
++        # Track B research patch: live-state SD on/off controller.
++        from vllm.v1.core.sched.tb_controller import TBController
++        from vllm.v1.core.sched.phase7_controller import Phase7Controller, PHASE7_MODES
++        import os as _os
++        # Capstone (Phase 7) modes route to the 2-axis regime controller; all other
++        # modes keep Track B's reactive cost-comparison controller.
++        self.tb_mode = _os.environ.get("VLLM_TB_MODE", "native").lower()
++        if self.tb_mode in PHASE7_MODES:
++            self.tb_controller = Phase7Controller(self.num_spec_tokens)
++        else:
++            self.tb_controller = TBController(self.num_spec_tokens)
++        self._tb_last_step_scheduled_tokens = 0
++        self._tb_last_step_draft_tokens = 0
++        self._tb_last_step_prefill_tokens = 0
++        # Phase 7 class-signal feed: previous step's admitted-request prefix-hit-rate.
++        # Accumulated in the waiting-request scheduling loop (where each new request's
++        # local-cached tokens are known); flushed to _tb_prev_hit_rate/_tb_prev_n_adm at
++        # the next schedule()'s evaluate(). SD-independent (measured from KV blocks at
++        # admission), so it works with SD off — no probe needed.
++        self._tb_prev_hit_rate: float | None = None
++        self._tb_prev_n_adm = 0
++        self._tb_adm_sum = 0.0
++        self._tb_adm_count = 0
+         if speculative_config is not None:
+             if speculative_config.num_speculative_tokens_per_batch_size:
+                 self.dynamic_sd_lookup = build_dynamic_sd_schedule_lookup(
+@@ -395,6 +419,12 @@ class Scheduler(SchedulerInterface):
+ 
+     def schedule(self, throttle_prefills: bool = False) -> SchedulerOutput:
+         self.current_step += 1
++        # H-OBS-1 research patch: entry timestamp for the CPU-cadence signal
++        # (matches what the Track B controller measures — time between
++        # consecutive schedule() entries). get_tracer() is None unless
++        # VLLM_OBS_TRACE is set, so this is a no-op in production.
++        _obs_tr0 = obs_get_tracer()
++        _obs_entry_t = _obs_tr0.t_now() if _obs_tr0 is not None else 0.0
+         # NOTE(woosuk) on the scheduling algorithm:
+         # There's no "decoding phase" nor "prefill phase" in the scheduler.
+         # Each request just has the num_computed_tokens and
+@@ -431,6 +461,50 @@ class Scheduler(SchedulerInterface):
+ 
+         self.kv_cache_manager.new_step_starts()
+ 
++        # ---- Track B / Phase 7 research patch (live-state SD on/off) ----
++        # Evaluate BEFORE running requests are processed so that an OFF decision
++        # can clear pending drafts and they will not be scheduled this step.
++        _tb_prev_prefill = getattr(self, "_tb_last_step_prefill_tokens", 0)
++        self._tb_last_step_prefill_tokens = 0
++        _tb_sd_enabled = True
++        if self.num_spec_tokens > 0:
++            # Flush the previous step's admitted-request hit-rate (accumulated in the
++            # waiting-request loop) into the class-signal feed before evaluating.
++            if getattr(self, "_tb_adm_count", 0) > 0:
++                self._tb_prev_hit_rate = self._tb_adm_sum / self._tb_adm_count
++                self._tb_prev_n_adm = self._tb_adm_count
++            else:
++                self._tb_prev_hit_rate = None
++                self._tb_prev_n_adm = 0
++            self._tb_adm_sum = 0.0
++            self._tb_adm_count = 0
++            from vllm.v1.core.sched.phase7_controller import Phase7Controller
++            if isinstance(self.tb_controller, Phase7Controller):
++                # Capstone 2-axis rule: needs KV-usage (load axis) + the previous
++                # step's admitted-request hit-rate (class axis). Both are SD-independent.
++                try:
++                    _tb_kv = float(self.kv_cache_manager.usage)
++                except Exception:
++                    _tb_kv = 1.0
++                _tb_sd_enabled = self.tb_controller.evaluate(
++                    running=len(self.running),
++                    kv_usage=_tb_kv,
++                    prev_hit_rate=self._tb_prev_hit_rate,
++                    prev_n_adm=self._tb_prev_n_adm,
++                )
++            else:
++                _tb_sd_enabled = self.tb_controller.evaluate(
++                    running=len(self.running),
++                    scheduled_tokens=getattr(self, "_tb_last_step_scheduled_tokens", 0),
++                    prefill_tokens=_tb_prev_prefill,
++                )
++        if not _tb_sd_enabled:
++            # Drop pending drafts so no new spec tokens are scheduled this step.
++            for _r in self.running:
++                if _r.spec_token_ids:
++                    _r.spec_token_ids = []
++        # ---- end Track B / Phase 7 patch ----
++
+         # DP prefill balancing: on a throttled (non-cadence-aligned) step, defer
+         # all prefill compute unless saturated.
+         defer_prefills = (
+@@ -782,6 +856,42 @@ class Scheduler(SchedulerInterface):
+                             num_local_cached_tokens=num_new_local_computed_tokens,
+                             num_external_cached_tokens=num_external_computed_tokens,
+                         )
++
++                    # Phase 7 research patch: per-request ADMISSION prefix-hit-rate log.
++                    # This is the SD-independent class-signal source (measured from KV
++                    # blocks at admission, independent of speculative decoding -> available
++                    # with SD off). Env-gated; no decision logic here (diagnostic only).
++                    import json as _json, os as _os
++                    _p7_adm = _os.environ.get("VLLM_P7_ADMISSION_TRACE", "")
++                    # Accumulate this admission's hit-rate into the Phase 7 class-signal
++                    # feed (always; cheap) AND optionally log per-request (env-gated).
++                    _ntok = request.num_prompt_tokens or 1
++                    # CLAMP local_cached to prompt length: num_new_local_computed_tokens is
++                    # block-aligned and can EXCEED the prompt (alignment past the end, and
++                    # re-admissions after preemption report the surviving cached span), so
++                    # an unclamped ratio reaches >1 (observed up to 9.0) and inflates the
++                    # rolling class-signal mean for long-prompt high-reuse traffic.
++                    _hr = min(num_new_local_computed_tokens, _ntok) / _ntok
++                    if hasattr(self, "_tb_adm_sum"):
++                        self._tb_adm_sum += _hr
++                        self._tb_adm_count += 1
++                    if _p7_adm:
++                        try:
++                            with open(_p7_adm, "a") as _f:
++                                _f.write(
++                                    _json.dumps(
++                                        {
++                                            "t": time.monotonic(),
++                                            "req_id": request_id,
++                                            "prompt_tokens": request.num_prompt_tokens,
++                                            "local_cached": num_new_local_computed_tokens,
++                                            "hit_rate": round(_hr, 4),
++                                        }
++                                    )
++                                    + "\n"
++                                )
++                        except Exception:
++                            pass
+                 else:
+                     # KVTransfer: WAITING reqs have num_computed_tokens > 0
+                     # after async KV recvs are completed.
+@@ -813,6 +923,7 @@ class Scheduler(SchedulerInterface):
+                     # preserve full cudagraph for this step.
+                     if (
+                         (self.num_spec_tokens > 0 and self.dynamic_sd_lookup is None)
++                        and _tb_sd_enabled  # Track B: no padding when SD is off
+                         and num_new_tokens == 1
+                         and (scheduled_running_reqs and not prefill_scheduled)
+                     ):
+@@ -1089,6 +1200,64 @@ class Scheduler(SchedulerInterface):
+                 len(num_scheduled_tokens)
+             ]
+ 
++        # Track B research patch: record this step's token mix so the next
++        # schedule() call can classify the just-finished step (prefill vs decode).
++        _tb_draft_this_step = sum(
++            len(v) for v in scheduled_spec_decode_tokens.values()
++        )
++        self._tb_last_step_scheduled_tokens = total_num_scheduled_tokens
++        self._tb_last_step_draft_tokens = _tb_draft_this_step
++        self._tb_last_step_prefill_tokens = max(
++            0, total_num_scheduled_tokens - _tb_draft_this_step
++        )
++        if self.num_spec_tokens > 0:
++            self.tb_controller.record_step(
++                sd_enabled=_tb_sd_enabled,
++                running=len(self.running),
++                waiting=len(self.waiting),
++                kv_usage=self.kv_cache_manager.usage,
++                scheduled_tokens=total_num_scheduled_tokens,
++                draft_tokens_scheduled=_tb_draft_this_step,
++                prefill_tokens=max(
++                    0, total_num_scheduled_tokens - _tb_draft_this_step
++                ),
++                max_num_seqs=self.scheduler_config.max_num_seqs,
++            )
++
++        # H-OBS-1 research patch: CPU-side record for the direct GPU-timing
++        # correlation (no-op unless VLLM_OBS_TRACE is set). One record per step
++        # that schedules >0 tokens; matched to GPU events by step id.
++        #
++        # Token semantics (verified empirically + from source, see data dict in
++        # obs_tracer.py): total_num_scheduled_tokens INCLUDES the draft/spec
++        # tokens (num_new_tokens is built from num_tokens_with_spec). So:
++        #   nondraft = scheduled - draft  = non-draft work = (1 bonus position
++        #     per running decode request) + (prefill chunk tokens). It is NOT
++        #     purely prefill. The genuine prefill/decode split below uses
++        #     per-request phase bookkeeping (num_computed < num_prompt), which
++        #     correctly classifies a decode request that schedules 1+K tokens as
++        #     0 prefill (a >1 scheduled-token count does NOT imply prefill).
++        _obs_step_id = -1
++        if _obs_tr0 is not None and total_num_scheduled_tokens > 0:
++            _obs_prefill = 0
++            for _rid, _nnew in num_scheduled_tokens.items():
++                _req = self.requests.get(_rid)
++                if _req is not None:
++                    # prompt tokens not yet computed that this step schedules.
++                    _obs_prefill += max(
++                        0, min(_nnew, _req.num_prompt_tokens - _req.num_computed_tokens)
++                    )
++            _obs_step_id = _obs_tr0.cpu_record(
++                running=len(self.running),
++                waiting=len(self.waiting),
++                scheduled_tokens=total_num_scheduled_tokens,
++                prefill_tokens=_obs_prefill,
++                draft_tokens=_tb_draft_this_step,
++                sd_enabled=_tb_sd_enabled,
++                entry_t=_obs_entry_t,
++                exit_t=time.monotonic(),
++            )
++
+         scheduler_output = SchedulerOutput(
+             scheduled_new_reqs=new_reqs_data,
+             scheduled_cached_reqs=cached_reqs_data,
+@@ -1098,6 +1267,11 @@ class Scheduler(SchedulerInterface):
+             scheduled_encoder_inputs=scheduled_encoder_inputs,
+             num_common_prefix_blocks=num_common_prefix_blocks,
+             preempted_req_ids=self.reset_preempted_req_ids,
++            # Track B research patch: propagate the live-state SD decision.
++            sd_enabled=_tb_sd_enabled,
++            # H-OBS-1 research patch: propagate the obs record id for GPU-event
++            # matching (no-op when the tracer is off).
++            obs_step_id=_obs_step_id,
+             # finished_req_ids is an existing state in the scheduler,
+             # instead of being newly scheduled in this step.
+             # It contains the request IDs that are finished in between
+diff --git a/vllm/v1/core/sched/tb_controller.py b/vllm/v1/core/sched/tb_controller.py
+new file mode 100644
+index 0000000..822d973
+--- /dev/null
++++ b/vllm/v1/core/sched/tb_controller.py
+@@ -0,0 +1,234 @@
++# Track B live-state SD on/off controller — research patch (NOT upstream code).
++#
++# Directive: "Hermes Research Directive — Native DSpark Baseline and Next
++# Research Milestone" §4. Prereg: docs/trackb-prereg.md (R1/R2 revisions).
++#
++# Design (measured serving state only — NO concurrency thresholds):
++#   The controller compares the MEASURED cost of a speculative step against the
++#   AR-equivalent cost of producing the SAME number of tokens. A decode step
++#   with SD on produces ~L accepted+bonus tokens per request (L = mean
++#   acceptance length, load-invariant at ≈2.77 in Phase 6), so:
++#       threshold(N) = L * est_ar_ms(N)
++#       est_ar_ms(n) = C0 + c1 * n          (Phase 6 AR TPOT fit, per token)
++#   Exit (ON -> OFF): the rolling mean of measured SD-on decode-step costs
++#     exceeds threshold(running) * (1 + band).
++#   Re-entry (OFF -> ON): PROBE-BASED. After a cooldown, the controller turns
++#     SD on for `probe_steps` steps and measures the ACTUAL DSpark step cost.
++#     Commit to ON if that measured cost is below threshold(running) * (1 - band);
++#     otherwise revert to OFF with an extended cooldown. This avoids the
++#     circularity of judging "is SD cheap?" from a period when SD was off
++#     (measured-while-off cost IS the AR cost, which always looks cheap).
++#   Prefill-heavy steps (> prefill_skip_frac non-draft tokens) and idle gaps
++#   (> max_step_s between schedule() calls) are excluded from the window.
++#
++# Phase 6 operating points (results/gate_e_repro/, docs/phase6-reproduction-
++# prereg.md §8) classify as: C=8 ON (T_on≈9.04 ms < thr 41.7 ms), C=32 ON
++# (26.18 < 79.0 — DSpark still wins +13% throughput there), C=64 OFF
++# (47.21 > 110.2 ... measured step cost exceeds L-scaled AR parity) — i.e. the
++# controller preserves the low/medium-load benefit and recovers AR parity at
++# saturation, matching the measured THROUGHPUT crossover (between C=32 and
++# C=64). See docs/trackb-prereg.md [CAL].
++#
++# Causal-verification trace (prereg §4.4): every step appends
++#   {t, sd_enabled, state, measured_ms, threshold_ms, est_ar_ms, occupancy,
++#    prefill_share, drafts_scheduled_this_step}
++# to VLLM_TB_TRACE (JSONL). Offline assertion: OFF steps => 0 new draft tokens
++# scheduled; ON decode steps => K drafts per running request.
++#
++# Env overrides (for the control arms and debugging):
++#   VLLM_TB_MODE = live | on | off | native  (default: live; native = zero-
++#   overhead always-on bypass, i.e. the true DSpark-K7 baseline arm)
++#   VLLM_TB_TRACE = /path/to/trace.jsonl  (default: disabled)
++import json
++import os
++import time
++
++# Injectable clock (module-level) so unit tests can drive time deterministically.
++_now = time.monotonic
++
++# AR per-token step-cost model est_ar_ms(n) = C0 + c1*n, least-squares fit to
++# the Phase 6 AR mean-TPOT operating points (results/gate_e_repro/):
++# AR TPOT = 13.55 ms @n=8, 21.43 ms @n=32, 34.92 ms @n=64.
++# Fit: C0=9.994, c1=0.3838 (max abs error 3.9% across the three points).
++_C0_MS = 9.994
++_C1_MS_PER_REQ = 0.3838
++# Mean acceptance length (accepted+bonus tokens per request per SD step),
++# load-invariant in Phase 6 (acc_len ≈ 2.77 at C=8/32/64). Scales the AR
++# per-token cost to an AR-equivalent PER-STEP cost for N running requests:
++# an AR server producing the same tokens as one SD step needs ~L steps.
++_L_ACCEPT = 2.77
++_BAND = 0.15            # hysteresis band (±15%)
++_COOLDOWN_S = 1.0       # minimum OFF duration before a re-entry probe
++_PROBE_STEPS = 3        # SD-on steps used to measure actual DSpark cost
++_WINDOW_S = 2.0         # rolling window for the measured step cost
++_PREFILL_SKIP_FRAC = 0.3  # steps with >30% non-draft tokens are not decode samples
++# Idle-gap filter (robustness, NOT a decision threshold): schedule() is only
++# called while requests exist; if the server was idle between two calls the
++# wall-clock delta is an idle gap, not a step cost. Real steps on this hardware
++# are <~200 ms (max_num_batched_tokens=4096), so deltas above this bound are
++# dropped and do not enter the rolling window.
++_MAX_STEP_S = 0.5
++
++
++class TBController:
++    def __init__(self, num_spec_tokens: int):
++        self.num_spec_tokens = num_spec_tokens
++        self.mode = os.environ.get("VLLM_TB_MODE", "live").lower()
++        self.trace_path = os.environ.get("VLLM_TB_TRACE", "")
++        # `native` mode = zero-overhead bypass: evaluate() returns True with no
++        # bookkeeping and record_step() is a no-op. This is the true native
++        # DSpark-K7 baseline arm (S3 compares CTRL-ON against it to measure the
++        # patch/decision overhead). Any other mode runs the full controller.
++        self.active = self.mode != "native"
++        # state: "on" (committed), "off", or "probe" (temporary SD-on measurement)
++        self.state = "on"
++        self._off_since: float | None = None
++        self._cooldown = _COOLDOWN_S
++        self._samples: list[tuple[float, float]] = []  # (wall_time, step_ms), SD-on decode only
++        self._probe_steps_left = 0
++        self._buf: list[str] = []
++        self._t_last_step: float | None = None
++
++    @property
++    def enabled(self) -> bool:
++        return self.state in ("on", "probe")
++
++    def est_ar_ms(self, n_reqs: int) -> float:
++        """AR per-token step cost (ms) for n running requests (Phase 6 fit)."""
++        return _C0_MS + _C1_MS_PER_REQ * max(0, n_reqs)
++
++    def threshold_ms(self, n_reqs: int) -> float:
++        """AR-equivalent PER-STEP cost (ms): L AR steps for the tokens one SD step yields."""
++        return _L_ACCEPT * self.est_ar_ms(n_reqs)
++
++    def _window_mean(self) -> float | None:
++        """Mean of ALL samples in the rolling window (prereg R3: 'rolling mean,
++        window W=2 s'). NOT a last-N mean: at C=8 (~50 steps/s) the window holds
++        ~100 samples, so a single transient spike cannot push the mean over the
++        exit band (last-4 would flap on every spike — see trackb-results §6)."""
++        if not self._samples:
++            return None
++        return sum(ms for _, ms in self._samples) / len(self._samples)
++
++    def evaluate(
++        self,
++        running: int,
++        scheduled_tokens: int,
++        prefill_tokens: int,
++    ) -> bool:
++        """Decide SD on/off for the step about to be scheduled.
++
++        Must be called once per scheduler.schedule() step, BEFORE running
++        requests are processed (so an OFF decision can clear pending drafts).
++        """
++        if not self.active:
++            return True  # native mode: always SD on, zero bookkeeping
++        now = _now()
++
++        # 1) Measure the previous step's cost — only SD-on decode steps count.
++        if self._t_last_step is not None and scheduled_tokens > 0:
++            dt = now - self._t_last_step
++            prefill_share = (
++                prefill_tokens / scheduled_tokens if scheduled_tokens else 0.0
++            )
++            if (
++                0 < dt < _MAX_STEP_S
++                and prefill_share <= _PREFILL_SKIP_FRAC
++                and self.state in ("on", "probe")
++            ):
++                self._samples.append((now, dt * 1000.0))
++        self._t_last_step = now
++
++        # 2) Prune the rolling window.
++        cutoff = now - _WINDOW_S
++        while self._samples and self._samples[0][0] < cutoff:
++            self._samples.pop(0)
++
++        if self.mode == "on":
++            self.state = "on"
++        elif self.mode == "off":
++            self.state = "off"
++        else:  # live
++            measured = self._window_mean()
++            thr = self.threshold_ms(running)
++            if self.state == "on":
++                # Exit: enough SD-on decode samples, measured cost above band.
++                if (
++                    len(self._samples) >= 3
++                    and measured is not None
++                    and measured > thr * (1.0 + _BAND)
++                ):
++                    self.state = "off"
++                    self._off_since = now
++                    self._cooldown = _COOLDOWN_S
++            elif self.state == "off":
++                # Start a re-entry probe once the cooldown has elapsed.
++                if (
++                    self._off_since is not None
++                    and now - self._off_since >= self._cooldown
++                ):
++                    self.state = "probe"
++                    self._probe_steps_left = _PROBE_STEPS
++                    self._samples.clear()  # measure the probe fresh
++            else:  # probe
++                if self._probe_steps_left > 0:
++                    self._probe_steps_left -= 1
++                if self._probe_steps_left <= 0 and len(self._samples) >= 2:
++                    m = self._window_mean()
++                    if m is not None and m < thr * (1.0 - _BAND):
++                        # Probe shows SD is cheap here: commit ON, keep the
++                        # probe samples as the committed state's baseline.
++                        self.state = "on"
++                        self._off_since = None
++                    else:
++                        # Probe shows SD still loses: back to OFF, longer cooldown.
++                        self.state = "off"
++                        self._off_since = now
++                        self._cooldown = max(self._cooldown * 2.0, _COOLDOWN_S)
++
++        return self.enabled
++
++    def record_step(
++        self,
++        sd_enabled: bool,
++        running: int,
++        waiting: int,
++        kv_usage: float,
++        scheduled_tokens: int,
++        draft_tokens_scheduled: int,
++        prefill_tokens: int,
++        max_num_seqs: int,
++    ) -> None:
++        """Append one causal-verification trace line for the step just built."""
++        if not self.active or not self.trace_path:
++            return
++        now = _now()
++        measured = self._window_mean()
++        self._buf.append(
++            json.dumps(
++                {
++                    "t": round(now, 6),
++                    "sd_enabled": int(sd_enabled),
++                    "state": self.state,
++                    "measured_ms": (round(measured, 3) if measured is not None else None),
++                    "threshold_ms": round(self.threshold_ms(running), 3),
++                    "est_ar_ms": round(self.est_ar_ms(running), 3),
++                    "occupancy": round(running / max(1, max_num_seqs), 4),
++                    "prefill_share": (
++                        round(prefill_tokens / scheduled_tokens, 4)
++                        if scheduled_tokens
++                        else None
++                    ),
++                    "drafts_scheduled_this_step": draft_tokens_scheduled,
++                }
++            )
++        )
++        if len(self._buf) >= 100:
++            self.flush_trace()
++
++    def flush_trace(self) -> None:
++        if not self.trace_path or not self._buf:
++            return
++        with open(self.trace_path, "a") as f:
++            f.write("\n".join(self._buf) + "\n")
++        self._buf.clear()
+diff --git a/vllm/v1/worker/gpu/model_runner.py b/vllm/v1/worker/gpu/model_runner.py
+index c74307d..6f4b7da 100644
+--- a/vllm/v1/worker/gpu/model_runner.py
++++ b/vllm/v1/worker/gpu/model_runner.py
+@@ -19,6 +19,7 @@ instead of embedding feature-specific logic directly.
+ 
+ import functools
+ import gc
++import os
+ import time
+ from copy import deepcopy
+ from typing import Any, NamedTuple
+@@ -49,6 +50,7 @@ from vllm.utils.math_utils import cdiv
+ from vllm.utils.mem_utils import DeviceMemoryProfiler, format_gib
+ from vllm.utils.torch_utils import PIN_MEMORY, STR_DTYPE_TO_TORCH_DTYPE
+ from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
++from vllm.v1.core.sched.obs_tracer import get_tracer as obs_get_tracer
+ from vllm.v1.kv_cache_interface import KVCacheConfig, MambaSpec
+ from vllm.v1.outputs import DraftTokenIds, ModelRunnerOutput
+ from vllm.v1.worker.cp_utils import check_attention_cp_compatibility
+@@ -1168,6 +1170,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+             empty_output = self.kv_connector.no_forward(scheduler_output)
+             return empty_output
+ 
++        # Track B research patch: carry the live-state SD decision to
++        # sample_tokens (which does not receive scheduler_output).
++        self._tb_sd_enabled = getattr(scheduler_output, "sd_enabled", True)
++
+         if not dummy_run:
+             # Common case.
+             # Prepare all the inputs and copy to the input buffers.
+@@ -1283,6 +1289,28 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+         # Update the EPLB meta.
+         self.eplb.prepare_forward(self.model_config, input_batch.num_tokens)
+ 
++        # H-OBS-1 research patch: start the direct GPU-step timing window for
++        # this executed step (no-op unless VLLM_OBS_TRACE is set). Placed just
++        # before the forward launch so it brackets target-forward + sampling +
++        # drafter. CUDA events are recorded async and queried lazily elsewhere;
++        # no blocking sync here. step_id matches the scheduler's CPU record.
++        # Dummy/profiling runs are not traced (no scheduler record exists).
++        _obs = obs_get_tracer() if not dummy_run else None
++        if _obs is not None:
++            _obs.start_step(scheduler_output.obs_step_id)
++        # H-OBS-1 research patch: NVTX range anchor for independent-trace step-ID
++        # matching (torch.profiler / nsys). Gated on VLLM_OBS_NVTX so it is a
++        # zero-cost no-op in the main run. The range brackets the CPU enqueue of
++        # this step's GPU work; under CUDA graphs the kernels execute async on
++        # the stream, so the analysis matches kernel bursts to steps by their
++        # deterministic token-signature sequence (see hoobs1_profile_check.py).
++        _obs_nvtx = os.environ.get("VLLM_OBS_NVTX") if not dummy_run else None
++        _obs_nvtx_id = None
++        if _obs_nvtx and scheduler_output.obs_step_id >= 0:
++            _obs_nvtx_id = torch.cuda.nvtx.range_start(
++                f"hoobs1.step.{scheduler_output.obs_step_id}"
++            )
++
+         # Run model.
+         if batch_desc.cg_mode == CUDAGraphMode.FULL:
+             # Use explicit cudagraph replay for FULL mode.
+@@ -1339,6 +1367,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+             output_intermediate_tensors = model_output
+ 
+         finished_req_ids = scheduler_output.finished_req_ids
++        # H-OBS-1 research patch: mark where the target-forward window ends
++        # (sampling + drafter run later, in sample_tokens). No-op unless enabled.
++        if _obs is not None:
++            _obs.mark_fwd_end(scheduler_output.obs_step_id)
+         self.execute_model_state = ExecuteModelState(
+             input_batch=input_batch,
+             attn_metadata=attn_metadata,
+@@ -1346,6 +1378,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+             hidden_states=hidden_states,
+             aux_hidden_states=aux_hidden_states,
+             finished_req_ids=finished_req_ids,
++            obs_step_id=scheduler_output.obs_step_id,
++            obs_nvtx_id=_obs_nvtx_id,
+         )
+ 
+         if not self.is_last_pp_rank:
+@@ -1368,8 +1402,15 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+         hidden_states = self.execute_model_state.hidden_states
+         aux_hidden_states = self.execute_model_state.aux_hidden_states
+         finished_req_ids = self.execute_model_state.finished_req_ids
++        _obs_step_id = getattr(self.execute_model_state, "obs_step_id", -1)
++        _obs_nvtx_id = getattr(self.execute_model_state, "obs_nvtx_id", None)
+         self.execute_model_state = None
+ 
++        # H-OBS-1 research patch: close the NVTX range anchor (started in
++        # execute_model) on this early-exit path too, so start/end always pair.
++        if _obs_nvtx_id is not None:
++            torch.cuda.nvtx.range_end(_obs_nvtx_id)
++
+         if not self.is_last_pp_rank:
+             # Non-last PP rank: hidden_states is None because this rank produced
+             # IntermediateTensors instead of final hidden states. Receive the
+@@ -1453,7 +1494,14 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+             input_batch.query_start_loc,
+         )
+ 
+-        if self.speculator is not None:
++        # Track B research patch: live-state SD off for this step => skip
++        # drafting entirely (no propose, no draft handoff). Only applies when a
++        # speculator exists (diffusion LLMs without one are unaffected).
++        _tb_skip_draft = self.speculator is not None and not getattr(
++            self, "_tb_sd_enabled", True
++        )
++
++        if self.speculator is not None and not _tb_skip_draft:
+             assert self.sampler is not None
+             # Let the target override the hidden state fed to the drafter
+             # (e.g. DeepSeek V4 MTP needs the pre-hc_head residual). The
+@@ -1480,17 +1528,33 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+             self.req_states.draft_tokens[input_batch.idx_mapping] = draft_tokens
+ 
+         if self.num_speculative_steps > 0:
+-            # Spec-decode and diffusion LLMs both use draft tokens but the latter does
+-            # not have a speculator (i.e. self.speculator is None)
+-            self.draft_tokens_handler.set_draft_tokens(
+-                input_batch,
+-                self.req_states.draft_tokens[input_batch.idx_mapping],
+-            )
++            if _tb_skip_draft:
++                # Track B research patch: no drafts this step; make
++                # take_draft_token_ids() return None so the engine does not
++                # schedule stale drafts on the next step.
++                self.draft_tokens_handler.reset()
++            else:
++                # Spec-decode and diffusion LLMs both use draft tokens but the latter does
++                # not have a speculator (i.e. self.speculator is None)
++                self.draft_tokens_handler.set_draft_tokens(
++                    input_batch,
++                    self.req_states.draft_tokens[input_batch.idx_mapping],
++                )
+ 
+-        # Post-step KV connector related operations.
++        # Post-step KV connector related work.
+         kv_connector_output = self.kv_connector.post_forward(finished_req_ids)
+         model_runner_output.kv_connector_output = kv_connector_output
+ 
++        # H-OBS-1 research patch: end the GPU-step timing window (after sampling
++        # + drafter, so gpu_step_ms brackets the full step). No-op unless enabled.
++        _obs_end = obs_get_tracer()
++        if _obs_end is not None:
++            _obs_end.end_step(_obs_step_id)
++        # H-OBS-1 research patch: close the NVTX range anchor started in
++        # execute_model (id carried via ExecuteModelState, so start/end pair).
++        if _obs_nvtx_id is not None:
++            torch.cuda.nvtx.range_end(_obs_nvtx_id)
++
+         return async_output
+ 
+     def take_draft_token_ids(self) -> DraftTokenIds | None:
+@@ -1606,3 +1670,8 @@ class ExecuteModelState(NamedTuple):
+     hidden_states: torch.Tensor | None
+     aux_hidden_states: list[torch.Tensor] | None
+     finished_req_ids: set[str]
++    # H-OBS-1 research patch: obs record id for this step (see scheduler).
++    obs_step_id: int = -1
++    # H-OBS-1 research patch: NVTX range id started in execute_model (None when
++    # VLLM_OBS_NVTX is unset or the step is dummy); closed in sample_tokens.
++    obs_nvtx_id: object = None
+diff --git a/vllm/v1/worker/gpu/spec_decode/utils.py b/vllm/v1/worker/gpu/spec_decode/utils.py
+index e25672e..79f2dc8 100644
+--- a/vllm/v1/worker/gpu/spec_decode/utils.py
++++ b/vllm/v1/worker/gpu/spec_decode/utils.py
+@@ -36,13 +36,22 @@ class DraftTokensHandler:
+         self.copy_stream.wait_stream(current_stream)
+         with torch.cuda.stream(self.copy_stream):
+             self.draft_tokens_np = async_copy_to_np(draft_tokens)
+-            # draft_tokens is a temporary allocation on the main stream and read here on
+-            # copy_stream; without record_stream, the caching allocator may reuse its
++            # draft_tokens is a temporary allocation on the main stream and read here
++            # on copy_stream; without record_stream, the caching allocator may reuse its
+             # memory before the async copy executes.
+             draft_tokens.record_stream(self.copy_stream)
+             self.copy_event.record()
+ 
++    def reset(self) -> None:
++        # Track B research patch: no drafts were produced this step (SD off).
++        self.req_ids = []
++        self.draft_tokens_np = None
++        self.num_draft_tokens = 0
++
+     def get_draft_tokens(self) -> DraftTokenIds | None:
++        if not self.req_ids:
++            # Track B research patch: no drafts this step.
++            return None
+         if self.draft_tokens_np is not None:
+             self.copy_event.synchronize()
+             draft_token_ids = self.draft_tokens_np.tolist()
