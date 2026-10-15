@@ -7,10 +7,21 @@ A rigorous empirical research project evaluating whether **dynamic, serving-stat
 ## 📁 Repository Structure
 
 ```text
-├── docs/                # 51 research documents (audits, pre-registrations, results, literature map)
-│   └── README.md        # Thematic & chronological guide to all documentation
+├── docs/                # 49 research documents (audits, pre-registrations, results, literature map)
+│   ├── audits/          # Upstream code audits and literature surveys
+│   ├── methodology/     # Telemetry plans, serving characterization, and syntheses
+│   ├── phases/          # Phase 1 through 7 experimental records (phase1_3/ through phase7/)
+│   ├── benchmarks/      # Micro-benchmarks (hoobs/, hclass/, mbatch/, tracks/)
+│   └── README.md        # Comprehensive catalog and thematic guide to all documentation
 ├── experiments/         # Benchmarks, client workloads, analysis pipelines, and runtime hooks
-│   └── README.md        # Comprehensive catalog of scripts and workload clients
+│   ├── clients/         # Workload generators & benchmark clients (Poisson, ShareGPT, SPEED-Bench)
+│   ├── runners/         # Benchmark runners, parameter sweeps, and execution shell scripts
+│   ├── analysis/        # Offline metrics parsers, nsys correlators, and visualization scripts
+│   ├── controllers/     # Legacy vLLM v0.19.1 sitecustomize controller hooks
+│   ├── data_prep/       # Prompt bank builders and dataset synthesis
+│   ├── track_a/         # Track A offline machine learning data collection & model training
+│   ├── utils/           # Server process management, metric scrapers, and profiling tools
+│   └── README.md        # Functional index of all experiment scripts
 ├── patches/             # Patches & standalone controller implementations for vLLM
 │   ├── vllm-v0.25.0-track-b-live-sd.patch   # Complete patch against vLLM v0.25.0
 │   ├── vllm-controllers/                   # Standalone controllers, tests, & profiling scripts
@@ -20,6 +31,9 @@ A rigorous empirical research project evaluating whether **dynamic, serving-stat
 ├── IDEA.md              # Original hypothesis and problem statement
 └── PROGRESS.md          # Comprehensive chronological research log and experiment journal
 ```
+
+> [!NOTE]
+> For seamless backwards compatibility, all original paths in `docs/` and `experiments/` are preserved via relative symlinks pointing to their new categorized locations.
 
 ---
 
@@ -42,7 +56,7 @@ Across 7 research phases:
 - **Static Payoff Surfaces Fail to Transfer**: While prefix-reusable queries benefit from speculation in isolation, under live mixed-batch serving the class axis fails to overcome the batch slowdown.
 - **Load-Only Control Wins**: Throttling or disabling speculative decoding strictly based on KV cache load (`CTRL-LOADONLY`) recovered substantial throughput at saturation (**+24.8% at c48** and **+36.2% at c96** over native fixed-K DSpark).
 
-Full details are documented in [`docs/phase7-capstone-results.md`](./docs/phase7-capstone-results.md) and [`PROGRESS.md`](./PROGRESS.md).
+Full details are documented in [`docs/phases/phase7/phase7-capstone-results.md`](./docs/phases/phase7/phase7-capstone-results.md) and [`PROGRESS.md`](./PROGRESS.md).
 
 ---
 
